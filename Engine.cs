@@ -12,7 +12,7 @@ internal sealed partial class Engine : IDisposable
     internal static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
     {
         "System", "Idle", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "svchost",
-        "dwm", "explorer", "audiodg", "MsMpEng", "SecurityHealthService", "GameRamCap",
+        "dwm", "audiodg", "MsMpEng", "SecurityHealthService", "GameRamCap",
         "EasyAntiCheat", "EasyAntiCheat_EOS", "BEService", "vgc", "vgtray",
         "Memory Compression", "Registry", "Secure System", "vmmem", "TextInputHost", "ctfmon", "SearchHost", "StartMenuExperienceHost",
     };
