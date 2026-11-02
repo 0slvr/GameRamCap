@@ -66,14 +66,14 @@ Without a token, git's normal sign-in (Git Credential Manager) is used instead.
 
 ## Intensity levels (Smart mode + `HoldBackground`)
 
-All levels act at all times. Check/trim interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling per background process:
+All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is for the **whole app** (all its processes together, split by what each uses):
 
-| Level | Interval | Ceiling / process |
+| Level | Interval | Ceiling / app |
 |---|---|---|
-| Ultra Performance | 1 s | 10 MB |
-| Performance | 2 s | 50 MB |
-| Balanced | 3 s | 120 MB |
-| Safe | 4 s | 200 MB |
-| Ultra Safe | 5 s | 300 MB |
+| Ultra Performance | 1 s | 20 MB |
+| Performance | 2 s | 40 MB |
+| Balanced | 3 s | 100 MB |
+| Safe | 4 s | 250 MB |
+| Ultra Safe | 5 s | 400 MB |
 
-`Custom` profile keeps using each target's own `CeilingMB`.
+`Custom` profile keeps using each target's own `CeilingMB` per process.

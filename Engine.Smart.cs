@@ -32,18 +32,35 @@ internal sealed partial class Engine
     const long PageSize = 4096;
     Preset P => Presets.Resolve(Config);
 
-    /// <summary>Puts the target's per-process hard ceiling on one background process (once per process).</summary>
-    void HoldProcess(string name, int pid, Target t)
+    /// <summary>Hard ceiling on one background process (once per process).</summary>
+    void HoldProcess(int pid, long ceiling)
     {
         if (_limited.ContainsKey(pid) || _failLogged.Contains(pid)) return;
         DateTime start;
         try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return; }
-        if (_limited.TryGetValue(pid, out var st) && st.Start == start) return;
         if (!Native.TryGetLimits(pid, out var omin, out var omax)) { _failLogged.Add(pid); return; }
-        long min = t.MinCeilingMB * MB, max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
-        long ceiling = P.HoldMB > 0 ? P.HoldMB * MB : Math.Clamp(t.CeilingMB * MB, min, max);
         if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); return; }
         _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling };
+    }
+
+    /// <summary>Caps a whole app. With a preset HoldMB the limit is for the app as a whole: it is shared between
+    /// its processes in proportion to what each one uses naturally (8 MB minimum each). A process that appears
+    /// later gets an even share. Without HoldMB (Custom) every process gets the target's own CeilingMB.</summary>
+    void HoldGroup(List<Proc> procs, Target t)
+    {
+        var fresh = procs.Where(x => !_limited.ContainsKey(x.Pid) && !_failLogged.Contains(x.Pid)).ToList();
+        if (fresh.Count == 0) return;
+        long app = P.HoldMB * MB;
+        bool first = !procs.Any(x => _limited.ContainsKey(x.Pid));
+        long sumWs = Math.Max(1, fresh.Sum(x => x.Ws));
+        long min = t.MinCeilingMB * MB, max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
+        foreach (var x in fresh)
+        {
+            long cap = app <= 0 ? Math.Clamp(t.CeilingMB * MB, min, max)
+                     : first ? Math.Max(8 * MB, app * x.Ws / sumWs)
+                     : Math.Max(8 * MB, app / procs.Count);
+            HoldProcess(x.Pid, cap);
+        }
     }
 
     void ApplySmart()
@@ -139,7 +156,7 @@ internal sealed partial class Engine
 
             // Keep a background app that was already trimmed from growing back (also new child processes).
             if (g.Holding && Config.HoldBackground)
-                foreach (var x in procs) HoldProcess(name, x.Pid, t);
+                HoldGroup(procs, t);
 
             // Feedback on the last trim: did the app fight back?
             if (g.Pending && (now - g.LastTrim).TotalSeconds >= 8)
@@ -171,7 +188,7 @@ internal sealed partial class Engine
             if (Config.HoldBackground && pr.HoldMB > 0)
             {
                 g.Holding = true;
-                foreach (var x in procs) HoldProcess(name, x.Pid, t);
+                HoldGroup(procs, t);
                 continue;
             }
             double cooldown = Math.Min(600, pr.Cooldown * Math.Pow(2, g.Backoff));
@@ -195,7 +212,7 @@ internal sealed partial class Engine
             if (Config.HoldBackground)
             {
                 g.Holding = true;
-                foreach (var x in procs) HoldProcess(name, x.Pid, t);
+                HoldGroup(procs, t);
             }
 
             long after = 0, pfBase = 0;
