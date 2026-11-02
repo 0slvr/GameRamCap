@@ -75,7 +75,18 @@ internal static class Native
     {
         var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
         if (h == IntPtr.Zero) return false;
-        try { return SetProcessWorkingSetSizeEx(h, originalMin, originalMax, HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE); }
+        try
+        {
+            // The original soft limits are Windows' tiny defaults (~1.3 MB max). Writing them back while
+            // the process uses hundreds of MB makes Windows trim it almost to zero. So lift the cap by
+            // giving a soft max well above the current usage instead of the tiny original value.
+            long ws = 0;
+            try { using var p = System.Diagnostics.Process.GetProcessById(pid); ws = p.WorkingSet64; } catch { }
+            long softMax = Math.Max((long)originalMax, Math.Max(ws * 2, 512L * 1024 * 1024));
+            nuint max = (nuint)softMax;
+            nuint min = originalMin < max ? originalMin : (nuint)(max / 2);
+            return SetProcessWorkingSetSizeEx(h, min, max, HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE);
+        }
         finally { CloseHandle(h); }
     }
 }
