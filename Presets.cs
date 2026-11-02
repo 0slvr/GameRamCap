@@ -13,7 +13,8 @@ internal sealed record Preset(
     double Busy,        // skip processes using more CPU than this (fraction of a core)
     double BusyCrit,    // same, when RAM is critical
     int MinProcMB,      // ignore processes smaller than this
-    double CritFactor); // under critical pressure the budget is multiplied by this
+    double CritFactor,  // under critical pressure the budget is multiplied by this
+    int HoldMB = 0);    // hard ceiling per process for background apps (0 = use each target's CeilingMB)
 
 internal static class Presets
 {
@@ -22,12 +23,14 @@ internal static class Presets
 
     static readonly Dictionary<string, Preset> Map = new(StringComparer.OrdinalIgnoreCase)
     {
-        //                                   always pres crit scan  cool  grace scale busy  busyC minMB crit
-        ["UltraPerformance"] = new("UltraPerformance", true, 60, 35, 1.0,  5,    1,   0.35, 0.40, 1.00, 20,  0.25),
-        ["Performance"]      = new("Performance",      true, 45, 25, 2.0, 10,    3,   0.70, 0.25, 0.70, 30,  0.40),
-        ["Balanced"]         = new("Balanced",         false,30, 12, 2.0, 20,    5,   1.00, 0.15, 0.50, 40,  0.50),
-        ["Safe"]             = new("Safe",             false,20,  8, 3.0, 45,   15,   1.50, 0.08, 0.30, 80,  0.70),
-        ["UltraSafe"]        = new("UltraSafe",        false,12,  5, 5.0, 90,   40,   2.50, 0.04, 0.15, 150, 0.85),
+        // Every level acts at all times (Always) and re-checks every N seconds: Ultra = 1s ... UltraSafe = 5s.
+        // The real difference is HoldMB: the hard RAM ceiling per background process.
+        //                                   always pres crit scan cool grace scale busy  busyC minMB crit  holdMB
+        ["UltraPerformance"] = new("UltraPerformance", true, 60, 35, 1.0, 1.0, 1.0, 0.35, 0.40, 1.00, 20,  0.25,  10),
+        ["Performance"]      = new("Performance",      true, 45, 25, 2.0, 2.0, 2.0, 0.70, 0.25, 0.70, 30,  0.40,  50),
+        ["Balanced"]         = new("Balanced",         true, 30, 12, 3.0, 3.0, 3.0, 1.00, 0.15, 0.50, 40,  0.50, 120),
+        ["Safe"]             = new("Safe",             true, 20,  8, 4.0, 4.0, 4.0, 1.50, 0.08, 0.30, 80,  0.70, 200),
+        ["UltraSafe"]        = new("UltraSafe",        true, 12,  5, 5.0, 5.0, 5.0, 2.50, 0.04, 0.15, 150, 0.85, 300),
     };
 
     /// <summary>The preset for the config. "Custom" uses the individual settings in config.json.</summary>

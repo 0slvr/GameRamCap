@@ -63,3 +63,17 @@ It checks the git state, asks for a commit message, commits and pushes. On the f
 For fully automatic auth set a token once: `setx GH_TOKEN "ghp_xxx"` and restart Visual Studio
 (fine-grained token, Contents: Read and write; also Administration: write if it should create the repo).
 Without a token, git's normal sign-in (Git Credential Manager) is used instead.
+
+## Intensity levels (Smart mode + `HoldBackground`)
+
+All levels act at all times. Check/trim interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling per background process:
+
+| Level | Interval | Ceiling / process |
+|---|---|---|
+| Ultra Performance | 1 s | 10 MB |
+| Performance | 2 s | 50 MB |
+| Balanced | 3 s | 120 MB |
+| Safe | 4 s | 200 MB |
+| Ultra Safe | 5 s | 300 MB |
+
+`Custom` profile keeps using each target's own `CeilingMB`.
