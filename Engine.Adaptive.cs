@@ -36,6 +36,7 @@ internal sealed partial class Engine
         if (next != st.Ceiling && Native.SetCeiling(p.Id, next))
         {
             st.Ceiling = next;
+            _learned[t.Exe] = next; // remember, so the next re-limit starts from the learned value
             st.LastAdjust = now;
             st.HighSecs = st.LowSecs = 0;
         }

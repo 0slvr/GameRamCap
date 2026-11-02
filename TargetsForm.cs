@@ -20,6 +20,10 @@ internal sealed class TargetsForm : Form
     readonly TextBox _manual = new() { Width = 130, PlaceholderText = "app name (no .exe)" };
     readonly NumericUpDown _bulk = new() { Minimum = 1, Maximum = 4000, Value = 50, Width = 70 };
     readonly CheckBox _fixed = new() { Text = "fixed (never grows)", Checked = true, AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+    readonly CheckBox _focus = new()
+    {
+        Text = "Focus mode: free the app I'm using, limit the rest", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
+    };
     readonly CheckBox _always = new()
     {
         Text = "Limit these apps all the time (not only while a game runs)", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
@@ -84,6 +88,7 @@ internal sealed class TargetsForm : Form
         var bottom = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         var save = new Button { Text = "Save", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true };
+        bottom.Controls.Add(_focus);
         bottom.Controls.Add(_always);
         bottom.Controls.Add(save);
         bottom.Controls.Add(close);
@@ -100,6 +105,7 @@ internal sealed class TargetsForm : Form
         Controls.Add(root);
 
         _always.Checked = _cfg.AlwaysLimit;
+        _focus.Checked = _cfg.FocusMode;
         foreach (var t in _cfg.Targets.Where(t => !Engine.Protected.Contains(t.Exe)))
             _grid.Rows.Add(t.Exe, t.CeilingMB, t.MinCeilingMB, t.MaxCeilingMB, t.Adaptive);
         RefreshRunning();
@@ -210,10 +216,13 @@ internal sealed class TargetsForm : Form
             int max = Math.Max(min, Num(r.Cells["Max"].Value, 600));
             int ceil = Math.Clamp(Num(r.Cells["Ceiling"].Value, 200), min, max);
             bool adaptive = r.Cells["Adaptive"].Value is true;
-            list.Add(new Target { Exe = exe, CeilingMB = ceil, MinCeilingMB = min, MaxCeilingMB = max, Adaptive = adaptive });
+            var old = _cfg.Targets.FirstOrDefault(x => string.Equals(x.Exe, exe, StringComparison.OrdinalIgnoreCase));
+            list.Add(new Target { Exe = exe, CeilingMB = ceil, MinCeilingMB = min, MaxCeilingMB = max, Adaptive = adaptive,
+                                  FocusAlso = old?.FocusAlso ?? new() });
         }
         _cfg.Targets = list;
         _cfg.AlwaysLimit = _always.Checked;
+        _cfg.FocusMode = _focus.Checked;
         ConfigStore.Save(_cfg); // the tray app notices the saved file and reloads within a second
 
         // show the clamped values back in the grid

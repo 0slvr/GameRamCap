@@ -63,7 +63,7 @@ sealed class TrayContext : ApplicationContext
             try { _tray.ShowBalloonTip(4000, title, text, ToolTipIcon.Info); } catch { }
         };
 
-        _timer = new Timer { Interval = 1000 };
+        _timer = new Timer { Interval = 400 };
         _timer.Tick += (_, _) => OnTick();
         _timer.Start();
     }

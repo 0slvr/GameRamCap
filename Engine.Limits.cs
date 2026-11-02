@@ -40,6 +40,7 @@ internal sealed partial class Engine
         foreach (var t in Config.Targets)
         {
             if (string.IsNullOrWhiteSpace(t.Exe) || Protected.Contains(t.Exe)) continue;
+            if (_exempt.Contains(t.Exe)) { ReleaseTarget(t); continue; } // focused: no limit
 
             foreach (var p in Safe(() => Process.GetProcessesByName(t.Exe)))
             {
@@ -61,6 +62,8 @@ internal sealed partial class Engine
                         continue;
                     }
                     long ceiling = Math.Clamp(t.CeilingMB, t.MinCeilingMB, Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB;
+                    if (_learned.TryGetValue(t.Exe, out var lc))
+                        ceiling = Math.Clamp(lc, t.MinCeilingMB * MB, Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB);
                     long wsNow = Safe(() => p.WorkingSet64, 0L);
                     if (!Native.SetCeiling(pid, ceiling))
                     {
@@ -85,6 +88,24 @@ internal sealed partial class Engine
         // Forget processes that exited (their limits vanish with them).
         foreach (var pid in _limited.Keys.Where(k => !alive.Contains(k)).ToList())
             _limited.Remove(pid);
+    }
+
+    /// <summary>Lifts the limit from every running process of one target (used when it gets focus).</summary>
+    void ReleaseTarget(Target t)
+    {
+        foreach (var p in Safe(() => Process.GetProcessesByName(t.Exe)))
+        {
+            try
+            {
+                if (_limited.TryGetValue(p.Id, out var st))
+                {
+                    if (Safe(() => p.StartTime, DateTime.MinValue) == st.Start)
+                        Native.Release(p.Id, st.OrigMin, st.OrigMax);
+                    _limited.Remove(p.Id);
+                }
+            }
+            finally { p.Dispose(); }
+        }
     }
 
     public void RestoreAll()

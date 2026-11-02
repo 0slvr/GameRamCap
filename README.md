@@ -18,6 +18,9 @@ Requires the .NET 8 SDK.
 
 | Setting | Meaning |
 |---|---|
+| `FocusMode` | **On by default.** Works for any app in `Targets`, no game needed: the app you are using (foreground window) is unlimited; every other target is capped. Click elsewhere and its cap returns. |
+| `RelimitDelaySeconds` | Delay before the cap returns after you leave an app (default 1.5s, avoids flicker on Alt+Tab). |
+| `Targets[].FocusAlso` | Extra process names that count as focusing that app (steamwebhelper already maps to `steam`). |
 | `Games` | Process names (no `.exe`) that always count as a game. Find them in Task Manager > Details. |
 | `AutoDetectFullscreen` | Any borderless/fullscreen foreground window counts as a game. |
 | `FullscreenIgnore` | Fullscreen apps that are not games (browsers, video players). |

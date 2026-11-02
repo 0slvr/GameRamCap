@@ -11,11 +11,18 @@ internal sealed class Target
     public int MaxCeilingMB { get; set; } = 600;
     /// <summary>Raise the ceiling when the app is busy, lower it when idle.</summary>
     public bool Adaptive { get; set; } = true;
+    /// <summary>Extra process names that count as "this app is focused" (e.g. steamwebhelper -> steam).</summary>
+    public List<string> FocusAlso { get; set; } = new();
 }
 
 internal sealed class Config
 {
     public bool Enabled { get; set; } = true;
+    /// <summary>Focus mode: a target app is unlimited while it is the foreground app and limited again
+    /// as soon as you click anywhere else. Works for every app in Targets, no game needed.</summary>
+    public bool FocusMode { get; set; } = true;
+    /// <summary>Seconds to wait after leaving a target app before its limit comes back (avoids flicker on Alt+Tab).</summary>
+    public double RelimitDelaySeconds { get; set; } = 1.5;
     /// <summary>Limit the target apps all the time (from the moment they start), not only while a game runs.</summary>
     public bool AlwaysLimit { get; set; } = true;
     /// <summary>Seconds a game must stay in the foreground before limits are applied.</summary>

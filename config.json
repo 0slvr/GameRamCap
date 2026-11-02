@@ -1,5 +1,7 @@
 {
   "Enabled": true,
+  "FocusMode": true,
+  "RelimitDelaySeconds": 1.5,
   "AlwaysLimit": true,
   "DelaySeconds": 5,
   "KeepLimitsWhileGameRuns": true,
@@ -20,35 +22,42 @@
       "CeilingMB": 250,
       "MinCeilingMB": 100,
       "MaxCeilingMB": 700,
-      "Adaptive": true
+      "Adaptive": true,
+      "FocusAlso": []
     },
     {
       "Exe": "claude",
       "CeilingMB": 600,
       "MinCeilingMB": 300,
       "MaxCeilingMB": 1500,
-      "Adaptive": true
+      "Adaptive": true,
+      "FocusAlso": []
     },
     {
       "Exe": "steamwebhelper",
       "CeilingMB": 150,
       "MinCeilingMB": 64,
       "MaxCeilingMB": 600,
-      "Adaptive": true
+      "Adaptive": true,
+      "FocusAlso": [
+        "steam"
+      ]
     },
     {
       "Exe": "Spotify",
       "CeilingMB": 120,
       "MinCeilingMB": 48,
       "MaxCeilingMB": 400,
-      "Adaptive": true
+      "Adaptive": true,
+      "FocusAlso": []
     },
     {
       "Exe": "explorer",
       "CeilingMB": 300,
       "MinCeilingMB": 150,
       "MaxCeilingMB": 700,
-      "Adaptive": true
+      "Adaptive": true,
+      "FocusAlso": []
     }
   ]
 }
