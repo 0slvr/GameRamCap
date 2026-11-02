@@ -133,6 +133,8 @@ sealed class TrayContext : ApplicationContext
 
     void RefreshModeChecks()
     {
+        if (_focusItem == null || _everythingItem == null || _holdItem == null
+            || _pressureItem == null || _fullscreenItem == null) return; // menu not built yet (LoadConfig runs first)
         _syncing = true;
         try
         {
