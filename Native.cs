@@ -46,6 +46,16 @@ internal static class Native
         finally { CloseHandle(h); }
     }
 
+    /// <summary>True when the process currently has a hard max working-set cap (e.g. left by a crashed run).</summary>
+    public static bool HasHardCeiling(int pid, out nuint min, out nuint max)
+    {
+        min = max = 0;
+        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try { return GetProcessWorkingSetSizeEx(h, out min, out max, out uint flags) && (flags & HARDWS_MAX_ENABLE) != 0; }
+        finally { CloseHandle(h); }
+    }
+
     /// <summary>Applies a hard ceiling on the resident working set.</summary>
     public static bool SetCeiling(int pid, long ceilingBytes)
     {

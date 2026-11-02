@@ -14,7 +14,7 @@ internal sealed partial class Engine
 
         TimeSpan cpu;
         long ws;
-        try { p.Refresh(); cpu = p.TotalProcessorTime; ws = p.WorkingSet64; }
+        try { cpu = p.TotalProcessorTime; ws = p.WorkingSet64; }
         catch { return; }
 
         double usage = (cpu - st.LastCpu).TotalSeconds / dt; // fraction of one logical core

@@ -21,6 +21,15 @@ internal sealed class Config
     /// <summary>Focus mode: a target app is unlimited while it is the foreground app and limited again
     /// as soon as you click anywhere else. Works for every app in Targets, no game needed.</summary>
     public bool FocusMode { get; set; } = true;
+    /// <summary>Limit EVERY app (games included) except the focused one and the Exceptions list.
+    /// Apps not in Targets get the Default* values below; apps in Targets keep their own numbers.</summary>
+    public bool LimitEverything { get; set; } = true;
+    public int DefaultCeilingMB { get; set; } = 300;
+    public int DefaultMinCeilingMB { get; set; } = 100;
+    public int DefaultMaxCeilingMB { get; set; } = 1500;
+    public bool DefaultAdaptive { get; set; } = true;
+    /// <summary>Process names (no ".exe") that are NEVER limited, whatever else is set.</summary>
+    public List<string> Exceptions { get; set; } = new();
     /// <summary>Seconds to wait after leaving a target app before its limit comes back (avoids flicker on Alt+Tab).</summary>
     public double RelimitDelaySeconds { get; set; } = 1.5;
     /// <summary>Limit the target apps all the time (from the moment they start), not only while a game runs.</summary>

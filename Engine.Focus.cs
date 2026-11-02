@@ -2,7 +2,8 @@ using System.Diagnostics;
 
 namespace GameRamCap;
 
-// Focus mode: the app you are using is never limited, everything else on the Targets list is.
+// Focus mode: the app you are using is never limited, everything else is (or only the Targets list,
+// when LimitEverything is off).
 internal sealed partial class Engine
 {
     // Apps whose visible window belongs to a different process than the one we limit.
@@ -11,7 +12,7 @@ internal sealed partial class Engine
         ["steamwebhelper"] = new[] { "steam" },
     };
 
-    readonly HashSet<string> _exempt = new(StringComparer.OrdinalIgnoreCase);       // targets with no limit right now
+    readonly HashSet<string> _exempt = new(StringComparer.OrdinalIgnoreCase);          // names with no limit right now
     readonly Dictionary<string, DateTime> _exemptUntil = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, long> _learned = new(StringComparer.OrdinalIgnoreCase); // adaptive ceilings
     string _focusName = "";
@@ -55,22 +56,28 @@ internal sealed partial class Engine
 
         var now = DateTime.UtcNow;
         var delay = TimeSpan.FromSeconds(Math.Max(0, Config.RelimitDelaySeconds));
-        _exempt.Clear();
-        foreach (var t in Config.Targets)
-        {
-            if (string.IsNullOrWhiteSpace(t.Exe)) continue;
-            if (IsFocused(t, fg)) _exemptUntil[t.Exe] = DateTime.MaxValue;
-            else if (_exemptUntil.TryGetValue(t.Exe, out var until))
-            {
-                if (until == DateTime.MaxValue) until = now + delay;   // focus was just lost
-                if (now < until) _exemptUntil[t.Exe] = until;
-                else _exemptUntil.Remove(t.Exe);
-            }
-            if (_exemptUntil.ContainsKey(t.Exe)) _exempt.Add(t.Exe);
-        }
 
-        ApplyAndAdapt();
-        bool anyFocused = Config.Targets.Any(t => IsFocused(t, fg));
-        Status = $"Limiting {_limited.Count} process(es)" + (anyFocused ? $" - {fg} in focus (free)" : "");
+        // Names that count as "in focus" right now: the foreground app + any target it stands for.
+        var focusNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (fg.Length > 0) focusNames.Add(fg);
+        foreach (var t in Config.Targets)
+            if (!string.IsNullOrWhiteSpace(t.Exe) && IsFocused(t, fg)) focusNames.Add(t.Exe);
+
+        foreach (var n in focusNames) _exemptUntil[n] = DateTime.MaxValue;
+        foreach (var key in _exemptUntil.Keys.ToList())
+        {
+            if (focusNames.Contains(key)) continue;
+            var until = _exemptUntil[key];
+            if (until == DateTime.MaxValue) until = now + delay;   // focus was just lost
+            if (now < until) _exemptUntil[key] = until;
+            else _exemptUntil.Remove(key);
+        }
+        _exempt.Clear();
+        foreach (var k in _exemptUntil.Keys) _exempt.Add(k);
+
+        if (Config.LimitEverything) ApplyEverything();
+        else ApplyAndAdapt();
+
+        Status = $"Limiting {_limited.Count} process(es)" + (fg.Length > 0 ? $" - {fg} in focus (free)" : "");
     }
 }

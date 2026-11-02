@@ -20,6 +20,10 @@ internal sealed class TargetsForm : Form
     readonly TextBox _manual = new() { Width = 130, PlaceholderText = "app name (no .exe)" };
     readonly NumericUpDown _bulk = new() { Minimum = 1, Maximum = 4000, Value = 50, Width = 70 };
     readonly CheckBox _fixed = new() { Text = "fixed (never grows)", Checked = true, AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+    readonly CheckBox _everything = new()
+    {
+        Text = "Limit EVERYTHING (games + all apps), not just this list", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
+    };
     readonly CheckBox _focus = new()
     {
         Text = "Focus mode: free the app I'm using, limit the rest", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
@@ -27,11 +31,12 @@ internal sealed class TargetsForm : Form
     readonly CheckBox _always = new()
     {
         Text = "Limit these apps all the time (not only while a game runs)", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
+        Visible = false, // old mode, ignored while Focus mode is on
     };
 
     public TargetsForm()
     {
-        Text = "GameRamCap - choose apps to limit";
+        Text = "GameRamCap - apps, limits and exceptions";
         ClientSize = new Size(920, 540);
         MinimumSize = new Size(780, 420);
         StartPosition = FormStartPosition.CenterScreen;
@@ -88,7 +93,10 @@ internal sealed class TargetsForm : Form
         var bottom = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         var save = new Button { Text = "Save", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true };
+        var exceptions = new Button { Text = "Exceptions...", AutoSize = true };
+        bottom.Controls.Add(_everything);
         bottom.Controls.Add(_focus);
+        bottom.Controls.Add(exceptions);
         bottom.Controls.Add(_always);
         bottom.Controls.Add(save);
         bottom.Controls.Add(close);
@@ -106,6 +114,7 @@ internal sealed class TargetsForm : Form
 
         _always.Checked = _cfg.AlwaysLimit;
         _focus.Checked = _cfg.FocusMode;
+        _everything.Checked = _cfg.LimitEverything;
         foreach (var t in _cfg.Targets.Where(t => !Engine.Protected.Contains(t.Exe)))
             _grid.Rows.Add(t.Exe, t.CeilingMB, t.MinCeilingMB, t.MaxCeilingMB, t.Adaptive);
         RefreshRunning();
@@ -117,6 +126,7 @@ internal sealed class TargetsForm : Form
         remove.Click += (_, _) => RemoveSelected();
         addManual.Click += (_, _) => AddManual();
         applyAll.Click += (_, _) => ApplyAll();
+        exceptions.Click += (_, _) => { using var f = new ExceptionsForm(_cfg); f.ShowDialog(this); };
         save.Click += (_, _) => Save();
         close.Click += (_, _) => Close();
     }
@@ -223,6 +233,7 @@ internal sealed class TargetsForm : Form
         _cfg.Targets = list;
         _cfg.AlwaysLimit = _always.Checked;
         _cfg.FocusMode = _focus.Checked;
+        _cfg.LimitEverything = _everything.Checked;
         ConfigStore.Save(_cfg); // the tray app notices the saved file and reloads within a second
 
         // show the clamped values back in the grid

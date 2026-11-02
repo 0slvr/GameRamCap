@@ -33,6 +33,22 @@ internal sealed partial class Engine
         }
     }
 
+    /// <summary>Everything mode: also clears leftover hard caps on any non-target process.</summary>
+    public void ClearStaleCeilingsEverything()
+    {
+        if (!Config.LimitEverything) return;
+        foreach (var p in Safe(() => Process.GetProcesses()))
+        {
+            try
+            {
+                if (p.Id <= 4 || Protected.Contains(p.ProcessName)) continue;
+                if (Native.HasHardCeiling(p.Id, out var min, out var max)) Native.Release(p.Id, min, max);
+            }
+            catch { }
+            finally { p.Dispose(); }
+        }
+    }
+
     void ApplyAndAdapt()
     {
         var alive = new HashSet<int>();
@@ -40,7 +56,8 @@ internal sealed partial class Engine
         foreach (var t in Config.Targets)
         {
             if (string.IsNullOrWhiteSpace(t.Exe) || Protected.Contains(t.Exe)) continue;
-            if (_exempt.Contains(t.Exe)) { ReleaseTarget(t); continue; } // focused: no limit
+            if (IsException(t.Exe)) continue;
+            if (_exempt.Contains(t.Exe)) { ReleaseByName(t.Exe); continue; } // focused: no limit
 
             foreach (var p in Safe(() => Process.GetProcessesByName(t.Exe)))
             {
@@ -90,10 +107,10 @@ internal sealed partial class Engine
             _limited.Remove(pid);
     }
 
-    /// <summary>Lifts the limit from every running process of one target (used when it gets focus).</summary>
-    void ReleaseTarget(Target t)
+    /// <summary>Lifts the limit from every running process with this name (used when it gets focus).</summary>
+    void ReleaseByName(string name)
     {
-        foreach (var p in Safe(() => Process.GetProcessesByName(t.Exe)))
+        foreach (var p in Safe(() => Process.GetProcessesByName(name)))
         {
             try
             {

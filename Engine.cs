@@ -15,6 +15,11 @@ internal sealed partial class Engine : IDisposable
         "dwm", "audiodg", "MsMpEng", "SecurityHealthService", "GameRamCap",
         "EasyAntiCheat", "EasyAntiCheat_EOS", "BEService", "vgc", "vgtray",
         "Memory Compression", "Registry", "Secure System", "vmmem", "TextInputHost", "ctfmon", "SearchHost", "StartMenuExperienceHost",
+        "ApplicationFrameHost", "RuntimeBroker", "ShellExperienceHost", "sihost", "taskhostw", "fontdrvhost", "conhost",
+        "dllhost", "WmiPrvSE", "spoolsv", "WUDFHost", "dasHost", "LockApp", "LogonUI", "SystemSettings", "NisSrv",
+        "MpDefenderCoreService", "SgrmBroker", "NVDisplay.Container", "nvcontainer", "RadeonSoftware", "AMDRSServ",
+        "RtkAudUService64", "vmware-vmx", "VirtualBoxVM", "VBoxHeadless", "vmwp", "qemu-system-x86_64",
+        "FACEITService", "FACEIT", "GameGuard", "xhunter1",
     };
 
     readonly Dictionary<int, Limited> _limited = new();

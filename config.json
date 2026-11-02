@@ -1,7 +1,13 @@
 {
   "Enabled": true,
   "FocusMode": true,
+  "LimitEverything": true,
   "RelimitDelaySeconds": 1.5,
+  "DefaultCeilingMB": 300,
+  "DefaultMinCeilingMB": 100,
+  "DefaultMaxCeilingMB": 1500,
+  "DefaultAdaptive": true,
+  "Exceptions": [],
   "AlwaysLimit": true,
   "DelaySeconds": 5,
   "KeepLimitsWhileGameRuns": true,

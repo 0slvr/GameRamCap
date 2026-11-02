@@ -31,6 +31,7 @@ sealed class TrayContext : ApplicationContext
         LoadConfig();
         Logger.Write($"Started. Games=[{string.Join(", ", _engine.Config.Games)}] AutoDetectFullscreen={_engine.Config.AutoDetectFullscreen} Delay={_engine.Config.DelaySeconds}s");
         _engine.ClearStaleCeilings();
+        _engine.ClearStaleCeilingsEverything();
 
         _statusItem = new ToolStripMenuItem("Idle") { Enabled = false };
         _enabledItem = new ToolStripMenuItem("Enabled") { Checked = true, CheckOnClick = true };

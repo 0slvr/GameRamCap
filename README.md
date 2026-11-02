@@ -18,6 +18,8 @@ Requires the .NET 8 SDK.
 
 | Setting | Meaning |
 |---|---|
+| `LimitEverything` | **On by default.** Every app and game gets a ceiling (values from `Default*`; apps in `Targets` keep their own numbers), except the one in focus, protected system processes and `Exceptions`. |
+| `Exceptions` | Process names that are never limited. Easiest: tray > Choose apps... > **Exceptions...** (OBS, VMs, anything that must keep all its RAM). |
 | `FocusMode` | **On by default.** Works for any app in `Targets`, no game needed: the app you are using (foreground window) is unlimited; every other target is capped. Click elsewhere and its cap returns. |
 | `RelimitDelaySeconds` | Delay before the cap returns after you leave an app (default 1.5s, avoids flicker on Alt+Tab). |
 | `Targets[].FocusAlso` | Extra process names that count as focusing that app (steamwebhelper already maps to `steam`). |
