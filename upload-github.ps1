@@ -78,8 +78,18 @@ if (-not $remote) {
         }
         catch { Fail "Could not create the repo:`n$($_.Exception.Message)" }
     }
+    if ($url -match '^(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)') {
+        Fail "What you pasted looks like an access token, not a repo URL.`n`nNothing was saved. Never paste a token here - set it with setx GH_TOKEN instead.`nIf that token was shared anywhere, revoke it on GitHub and create a new one."
+    }
+    if ($url -notmatch '^(https://github\.com/[^/\s]+/[^/\s]+|git@github\.com:[^/\s]+/[^/\s]+)$') {
+        Fail "That is not a GitHub repo URL.`n`nExpected: https://github.com/you/repo.git"
+    }
     & git remote add origin $url 2>&1 | Out-Null
     $remote = $url
+}
+
+if ($remote -match '^(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)' -or $remote -notmatch '^(https://|git@|ssh://)') {
+    Fail "The 'origin' remote is not a valid URL (it may contain a pasted token).`n`nFix it in a terminal:`n  git remote remove origin`nthen run this button again. If a token was pasted anywhere, revoke it on GitHub."
 }
 
 # ---- what would be uploaded? ----
