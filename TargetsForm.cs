@@ -20,6 +20,8 @@ internal sealed class TargetsForm : Form
     readonly TextBox _manual = new() { Width = 130, PlaceholderText = "app name (no .exe)" };
     readonly NumericUpDown _bulk = new() { Minimum = 1, Maximum = 4000, Value = 50, Width = 70 };
     readonly CheckBox _fixed = new() { Text = "fixed (never grows)", Checked = true, AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+    readonly NumericUpDown _defCeil = new() { Minimum = 20, Maximum = 8000, Value = 300, Width = 70 };
+    readonly CheckBox _defFixed = new() { Text = "fixed (never grows)", AutoSize = true, Margin = new Padding(3, 7, 20, 3) };
     readonly CheckBox _everything = new()
     {
         Text = "Limit EVERYTHING (games + all apps), not just this list", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
@@ -94,6 +96,13 @@ internal sealed class TargetsForm : Form
         var save = new Button { Text = "Save", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true };
         var exceptions = new Button { Text = "Exceptions...", AutoSize = true };
+        bottom.Controls.Add(new Label
+        {
+            Text = "Limit for everything NOT in the list (MB):", AutoSize = true, Margin = new Padding(3, 9, 3, 3),
+        });
+        bottom.Controls.Add(_defCeil);
+        bottom.Controls.Add(_defFixed);
+        bottom.SetFlowBreak(_defFixed, true);
         bottom.Controls.Add(_everything);
         bottom.Controls.Add(_focus);
         bottom.Controls.Add(exceptions);
@@ -115,6 +124,8 @@ internal sealed class TargetsForm : Form
         _always.Checked = _cfg.AlwaysLimit;
         _focus.Checked = _cfg.FocusMode;
         _everything.Checked = _cfg.LimitEverything;
+        _defCeil.Value = Math.Clamp(_cfg.DefaultCeilingMB, (int)_defCeil.Minimum, (int)_defCeil.Maximum);
+        _defFixed.Checked = !_cfg.DefaultAdaptive;
         foreach (var t in _cfg.Targets.Where(t => !Engine.Protected.Contains(t.Exe)))
             _grid.Rows.Add(t.Exe, t.CeilingMB, t.MinCeilingMB, t.MaxCeilingMB, t.Adaptive);
         RefreshRunning();
@@ -234,6 +245,11 @@ internal sealed class TargetsForm : Form
         _cfg.AlwaysLimit = _always.Checked;
         _cfg.FocusMode = _focus.Checked;
         _cfg.LimitEverything = _everything.Checked;
+        int d = (int)_defCeil.Value;
+        _cfg.DefaultCeilingMB = d;
+        _cfg.DefaultAdaptive = !_defFixed.Checked;
+        _cfg.DefaultMinCeilingMB = _defFixed.Checked ? d : Math.Max(20, d / 2);
+        _cfg.DefaultMaxCeilingMB = _defFixed.Checked ? d : d * 3;
         ConfigStore.Save(_cfg); // the tray app notices the saved file and reloads within a second
 
         // show the clamped values back in the grid
