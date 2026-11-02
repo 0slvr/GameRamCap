@@ -41,6 +41,10 @@ internal sealed class Config
     /// <summary>Smart mode intensity: UltraPerformance, Performance, Balanced, Safe, UltraSafe, or Custom
     /// (Custom uses the individual numbers above; the five profiles override them).</summary>
     public string Profile { get; set; } = "Balanced";
+    /// <summary>Smart mode: once a background app has been trimmed, keep it from growing back with a hard ceiling
+    /// (its target CeilingMB per process) until you focus it again. Focusing the app lifts the ceiling at once.
+    /// false = pure soft trimming (the app may re-grow between trims).</summary>
+    public bool HoldBackground { get; set; } = true;
     public bool IsSmart() => string.Equals(Mode, "Smart", StringComparison.OrdinalIgnoreCase);
     /// <summary>Focus mode: a target app is unlimited while it is the foreground app and limited again
     /// as soon as you click anywhere else. Works for every app in Targets, no game needed.</summary>

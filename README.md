@@ -16,6 +16,7 @@ It does not clean memory periodically. It uses the documented `SetProcessWorking
 - The budget is per **app** (all its processes together). It is `BudgetMB`, or `MaxCeilingMB` when 0.
 - Never touches the focused app, an app you left in the last `GraceAfterFocusSeconds`, busy processes, or `Games`.
 - Learns: if an app pulls its pages back right away, its budget grows and the cooldown doubles; when it stays quiet, the budget returns to normal.
+- `HoldBackground` (default `true`): after a background app is trimmed it also gets a hard ceiling (its `CeilingMB` per process) so it cannot grow back; focusing the app lifts the ceiling at once. Set `false` for pure soft trimming.
 - Below `CriticalFreePercent` (10%) trimming is stronger (budget halved, down to `MinCeilingMB`).
 
 **Hard** - the old behaviour: fixed hard per-process ceilings. Set `"Mode": "Hard"`.

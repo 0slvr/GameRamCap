@@ -2,6 +2,7 @@
   "Enabled": true,
   "Mode": "Smart",
   "Profile": "Balanced",
+  "HoldBackground": true,
   "LimitWhenRamFree": false,
   "PressureFreePercent": 25,
   "CriticalFreePercent": 10,

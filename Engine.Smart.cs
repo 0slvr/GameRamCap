@@ -19,6 +19,7 @@ internal sealed partial class Engine
         public DateTime LastTrim = DateTime.MinValue;
         public DateTime LastFocused = DateTime.MinValue;
         public bool Pending;
+        public bool Holding;   // background app is kept under a hard ceiling until it gets focus
         public long BeforeWs, AfterWs, PfBase;
     }
 
@@ -31,12 +32,27 @@ internal sealed partial class Engine
     const long PageSize = 4096;
     Preset P => Presets.Resolve(Config);
 
+    /// <summary>Puts the target's per-process hard ceiling on one background process (once per process).</summary>
+    void HoldProcess(string name, int pid, Target t)
+    {
+        if (_failLogged.Contains(pid)) return;
+        DateTime start;
+        try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return; }
+        if (_limited.TryGetValue(pid, out var st) && st.Start == start) return;
+        if (!Native.TryGetLimits(pid, out var omin, out var omax)) { _failLogged.Add(pid); return; }
+        long min = t.MinCeilingMB * MB, max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
+        long ceiling = Math.Clamp(t.CeilingMB * MB, min, max);
+        if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); return; }
+        _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling };
+    }
+
     void ApplySmart()
     {
         var now = DateTime.UtcNow;
         if (!ReferenceEquals(_cfgSeen, Config))
         {
             _cfgSeen = Config;
+            RestoreAll();   // lift any ceilings held under the previous settings
             _synth.Clear(); _groups.Clear(); _cpuPrev.Clear(); _failLogged.Clear();
             _lastSmart = DateTime.MinValue;
         }
@@ -90,6 +106,17 @@ internal sealed partial class Engine
             finally { p.Dispose(); }
         }
         foreach (var pid in _cpuPrev.Keys.Where(k => !seen.Contains(k)).ToList()) _cpuPrev.Remove(pid);
+        foreach (var pid in _limited.Keys.Where(k => !seen.Contains(k)).ToList())
+        {
+            // Process exited, or is now excluded (game detected): lift the ceiling if it is still the same process.
+            try
+            {
+                using var gone = Process.GetProcessById(pid);
+                if (gone.StartTime == _limited[pid].Start) Native.Release(pid, _limited[pid].OrigMin, _limited[pid].OrigMax);
+            }
+            catch { }
+            _limited.Remove(pid);
+        }
 
         // 2) Decide per app.
         foreach (var (name, procs) in byName)
@@ -101,9 +128,18 @@ internal sealed partial class Engine
                 g = _groups[name] = new Group { Budget = b, BaseBudget = b };
             }
 
-            if (_exempt.Contains(name)) { g.LastFocused = now; g.Pending = false; continue; }
+            if (_exempt.Contains(name))
+            {
+                g.LastFocused = now; g.Pending = false;
+                if (g.Holding || _limited.Count > 0) { g.Holding = false; ReleaseByName(name); }   // focused: ceiling off at once
+                continue;
+            }
 
             long total = procs.Sum(x => x.Ws);
+
+            // Keep a background app that was already trimmed from growing back (also new child processes).
+            if (g.Holding && Config.HoldBackground)
+                foreach (var x in procs) HoldProcess(name, x.Pid, t);
 
             // Feedback on the last trim: did the app fight back?
             if (g.Pending && (now - g.LastTrim).TotalSeconds >= 8)
@@ -146,6 +182,12 @@ internal sealed partial class Engine
                 projected -= (long)(v.Ws * 0.85);
             }
             if (trimmed == 0) continue;
+
+            if (Config.HoldBackground)
+            {
+                g.Holding = true;
+                foreach (var x in procs) HoldProcess(name, x.Pid, t);
+            }
 
             long after = 0, pfBase = 0;
             foreach (var x in procs)
