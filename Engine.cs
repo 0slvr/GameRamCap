@@ -12,6 +12,7 @@ internal sealed class Engine : IDisposable
         "System", "Idle", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "svchost",
         "dwm", "explorer", "audiodg", "MsMpEng", "SecurityHealthService", "GameRamCap",
         "EasyAntiCheat", "EasyAntiCheat_EOS", "BEService", "vgc", "vgtray",
+        "Memory Compression", "Registry", "Secure System", "vmmem", "TextInputHost", "ctfmon", "SearchHost", "StartMenuExperienceHost",
     };
 
     sealed class Limited

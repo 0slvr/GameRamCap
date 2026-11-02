@@ -18,6 +18,8 @@ internal sealed class TargetsForm : Form
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, BackgroundColor = SystemColors.Window,
     };
     readonly TextBox _manual = new() { Width = 130, PlaceholderText = "app name (no .exe)" };
+    readonly NumericUpDown _bulk = new() { Minimum = 1, Maximum = 4000, Value = 50, Width = 70 };
+    readonly CheckBox _fixed = new() { Text = "fixed (never grows)", Checked = true, AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
     readonly CheckBox _always = new()
     {
         Text = "Limit these apps all the time (not only while a game runs)", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
@@ -72,6 +74,10 @@ internal sealed class TargetsForm : Form
         rightButtons.Controls.Add(remove);
         rightButtons.Controls.Add(_manual);
         rightButtons.Controls.Add(addManual);
+        var applyAll = new Button { Text = "Set ALL to (MB):", AutoSize = true };
+        rightButtons.Controls.Add(applyAll);
+        rightButtons.Controls.Add(_bulk);
+        rightButtons.Controls.Add(_fixed);
         right.Controls.Add(rightButtons, 0, 2);
 
         // Bottom
@@ -94,7 +100,7 @@ internal sealed class TargetsForm : Form
         Controls.Add(root);
 
         _always.Checked = _cfg.AlwaysLimit;
-        foreach (var t in _cfg.Targets)
+        foreach (var t in _cfg.Targets.Where(t => !Engine.Protected.Contains(t.Exe)))
             _grid.Rows.Add(t.Exe, t.CeilingMB, t.MinCeilingMB, t.MaxCeilingMB, t.Adaptive);
         RefreshRunning();
 
@@ -104,6 +110,7 @@ internal sealed class TargetsForm : Form
         _running.DoubleClick += (_, _) => AddSelected();
         remove.Click += (_, _) => RemoveSelected();
         addManual.Click += (_, _) => AddManual();
+        applyAll.Click += (_, _) => ApplyAll();
         save.Click += (_, _) => Save();
         close.Click += (_, _) => Close();
     }
@@ -168,6 +175,18 @@ internal sealed class TargetsForm : Form
         AddRow(_manual.Text);
         _manual.Clear();
         RefreshRunning();
+    }
+
+    void ApplyAll()
+    {
+        int n = (int)_bulk.Value;
+        foreach (DataGridViewRow r in _grid.Rows)
+        {
+            r.Cells["Ceiling"].Value = n;
+            r.Cells["Min"].Value = _fixed.Checked ? n : Math.Max(1, n / 2);
+            r.Cells["Max"].Value = _fixed.Checked ? n : n * 3;
+            r.Cells["Adaptive"].Value = !_fixed.Checked;
+        }
     }
 
     void RemoveSelected()
