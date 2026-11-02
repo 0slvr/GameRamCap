@@ -27,15 +27,13 @@ internal static class Presets
     {
         // Every level acts at all times (Always) and re-checks every N seconds: Ultra = 1s ... UltraSafe = 5s.
         // The real difference is HoldMB: the hard RAM ceiling per background process (app total = HoldMB x its processes).
-        //  UltraPerformance = the lowest ceiling that still causes no problems (16 MB = AutoMinProcessMB, the floor of auto-squeeze).
-        //  Balanced         = the least RAM that still runs without stutter (auto-squeeze probes down from here).
-        //  Performance      = halfway between those two. Safe / UltraSafe = progressively more room.
+        // HoldFloorMB also lowers the auto-squeeze minimum for that level (see TuneHeld), so Ultra can really go down to 8 MB.
         //                                   always pres crit scan cool grace scale busy  busyC minMB crit  holdMB floor keep%
-        ["UltraPerformance"] = new("UltraPerformance", true, 60, 35, 1.0, 1.0, 1.0, 0.35, 0.40, 1.00, 20,  0.25, 16,  8,   1),
-        ["Performance"]      = new("Performance",      true, 45, 25, 2.0, 2.0, 2.0, 0.70, 0.25, 0.70, 30,  0.40, 32,  20,  20),
-        ["Balanced"]         = new("Balanced",         true, 30, 12, 3.0, 3.0, 3.0, 1.00, 0.15, 0.50, 40,  0.50, 50,  32,  40),
-        ["Safe"]             = new("Safe",             true, 20,  8, 4.0, 4.0, 4.0, 1.50, 0.08, 0.30, 80,  0.70, 90,  48,  55),
-        ["UltraSafe"]        = new("UltraSafe",        true, 12,  5, 5.0, 5.0, 5.0, 2.50, 0.04, 0.15, 150, 0.85, 160, 80,  70),
+        ["UltraPerformance"] = new("UltraPerformance", true, 60, 35, 1.0, 1.0, 1.0, 0.35, 0.40, 1.00, 20,  0.25, 8,   8,   1),
+        ["Performance"]      = new("Performance",      true, 45, 25, 2.0, 2.0, 2.0, 0.70, 0.25, 0.70, 30,  0.40, 12,  10,  5),
+        ["Balanced"]         = new("Balanced",         true, 30, 12, 3.0, 3.0, 3.0, 1.00, 0.15, 0.50, 40,  0.50, 16,  12,  10),
+        ["Safe"]             = new("Safe",             true, 20,  8, 4.0, 4.0, 4.0, 1.50, 0.08, 0.30, 80,  0.70, 40,  24,  25),
+        ["UltraSafe"]        = new("UltraSafe",        true, 12,  5, 5.0, 5.0, 5.0, 2.50, 0.04, 0.15, 150, 0.85, 90,  48,  50),
     };
 
     /// <summary>The preset for the config. "Custom" uses the individual settings in config.json.</summary>

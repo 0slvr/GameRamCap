@@ -78,15 +78,15 @@ Without a token, git's normal sign-in (Git Credential Manager) is used instead.
 
 ## Intensity levels (Smart mode + `HoldBackground`)
 
-All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is **per process** (the app total is this x its number of processes, split by what each process uses). No process is squeezed below `HoldMinProcessMB` (64) or `HoldKeepPercent` (60%) of its current size, so apps do not stutter. The floor depends on the level (Ultra Performance 8 MB / 1% ... Ultra Safe 80 MB / 70%; Custom uses config.json). Held processes also **adapt**: one that sits at its ceiling and keeps page-faulting gets +25% (up to `MaxCeilingMB`), and slides back after 30 quiet seconds:
+All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is **per process** (the app total is this x its number of processes, split by what each process uses). No process is squeezed below `HoldMinProcessMB` (64) or `HoldKeepPercent` (60%) of its current size, so apps do not stutter. The floor depends on the level (Ultra Performance 8 MB / 1% ... Ultra Safe 48 MB / 50%; Custom uses config.json). Held processes also **adapt**: one that sits at its ceiling and keeps page-faulting gets +25% (up to `MaxCeilingMB`), and slides back after 30 quiet seconds:
 
 | Level | Interval | Ceiling / process | Meaning |
 |---|---|---|---|
-| Ultra Performance | 1 s | 16 MB | lowest limit possible, no problems |
-| Performance | 2 s | 32 MB | halfway between Ultra Performance and Balanced |
-| Balanced | 3 s | 50 MB | least RAM that still runs without stutter |
-| Safe | 4 s | 90 MB | more room |
-| Ultra Safe | 5 s | 160 MB | most room |
+| Ultra Performance | 1 s | 8 MB | lowest possible |
+| Performance | 2 s | 12 MB | very low |
+| Balanced | 3 s | 16 MB | low, still tuned by auto-squeeze |
+| Safe | 4 s | 40 MB | more room |
+| Ultra Safe | 5 s | 90 MB | most room |
 
 `Custom` profile keeps using each target's own `CeilingMB` per process.
 

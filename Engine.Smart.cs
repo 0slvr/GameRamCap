@@ -84,7 +84,8 @@ internal sealed partial class Engine
         var now = DateTime.UtcNow;
         var c = Config;
         bool auto = c.AutoSqueeze;
-        long absMin = Math.Max(8, c.AutoMinProcessMB) * MB;
+        var pz = P;
+        long absMin = Math.Max(8, pz.HoldFloorMB > 0 ? Math.Min(c.AutoMinProcessMB, pz.HoldFloorMB) : c.AutoMinProcessMB) * MB;   // low levels may squeeze below the global minimum
         double faultRate = Math.Max(10, c.AutoFaultRate);
         double probe = Math.Max(3, c.AutoProbeSeconds);
         long tmax = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
