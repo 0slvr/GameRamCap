@@ -66,7 +66,8 @@ internal sealed class Engine : IDisposable
         if (gaming) { if (_gamingSince == DateTime.MinValue) _gamingSince = now; }
         else _gamingSince = DateTime.MinValue;
 
-        bool active = gaming && (now - _gamingSince).TotalSeconds >= Config.DelaySeconds;
+        bool always = Enabled && Config.Enabled && Config.AlwaysLimit;
+        bool active = always || (gaming && (now - _gamingSince).TotalSeconds >= Config.DelaySeconds);
         if (!active)
         {
             if (_wasActive)
@@ -85,7 +86,7 @@ internal sealed class Engine : IDisposable
         if (first)
         {
             _wasActive = true;
-            Logger.Write($"Game active: {GameName} - applying limits.");
+            Logger.Write(always ? "Always-on mode - applying limits." : $"Game active: {GameName} - applying limits.");
         }
         ApplyAndAdapt();
         if (first)
@@ -93,10 +94,10 @@ internal sealed class Engine : IDisposable
             if (_limited.Count == 0)
             {
                 Logger.Write("No target processes (Discord, Spotify, ...) could be limited - none running, or access denied.");
-                Notify?.Invoke("GameRamCap", $"Game detected ({GameName}) but nothing to limit.");
+                { if (!always) Notify?.Invoke("GameRamCap", $"Game detected ({GameName}) but nothing to limit."); }
             }
             else
-                Notify?.Invoke("GameRamCap", $"Limiting {_limited.Count} process(es) while {GameName} runs.");
+                Notify?.Invoke("GameRamCap", always ? $"Limiting {_limited.Count} process(es)." : $"Limiting {_limited.Count} process(es) while {GameName} runs.");
         }
         Status = $"Limiting {_limited.Count} process(es)";
     }

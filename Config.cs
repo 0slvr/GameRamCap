@@ -16,6 +16,8 @@ internal sealed class Target
 internal sealed class Config
 {
     public bool Enabled { get; set; } = true;
+    /// <summary>Limit the target apps all the time (from the moment they start), not only while a game runs.</summary>
+    public bool AlwaysLimit { get; set; } = true;
     /// <summary>Seconds a game must stay in the foreground before limits are applied.</summary>
     public int DelaySeconds { get; set; } = 5;
     /// <summary>Keep the limits applied while the game process is running, even if you Alt+Tab away
