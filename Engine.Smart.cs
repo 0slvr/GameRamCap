@@ -32,45 +32,58 @@ internal sealed partial class Engine
     const long PageSize = 4096;
     Preset P => Presets.Resolve(Config);
 
-    /// <summary>Hard ceiling on one background process (once per process).</summary>
-    void HoldProcess(int pid, long ceiling, long ws = 0)
+    /// <summary>Hard ceiling on one background process (once per process). floor = a safe level learned earlier
+    /// (auto-squeeze will not probe below it for the first minutes).</summary>
+    void HoldProcess(int pid, long ceiling, long ws = 0, long floor = 0)
     {
         if (_limited.ContainsKey(pid) || _failLogged.Contains(pid)) return;
         DateTime start;
         try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return; }
         if (!Native.TryGetLimits(pid, out var omin, out var omax)) { _failLogged.Add(pid); return; }
         if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); return; }
-        _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling, BaseCeiling = ceiling, OrigWs = Math.Max(ws, ceiling) };
+        var st = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling, BaseCeiling = ceiling, OrigWs = Math.Max(ws, ceiling) };
+        if (floor > 0) { st.Floor = floor; st.FloorUntil = DateTime.UtcNow.AddMinutes(5); }
+        _limited[pid] = st;
     }
 
-    /// <summary>Caps the processes of one background app. With a preset HoldMB the budget is per process:
-    /// the app's total is HoldMB x its process count, shared in proportion to what each process uses.
-    /// No process is squeezed below max(HoldMinProcessMB, HoldKeepPercent % of its current size), so it keeps
-    /// enough RAM to work without constant page faults (that was the stutter). A process that appears later
-    /// gets HoldMB, with the same floor. Without HoldMB (Custom) every process gets the target's own CeilingMB.</summary>
-    void HoldGroup(List<Proc> procs, Target t)
+    /// <summary>Caps the processes of one background app. With a preset HoldMB the target for the app is
+    /// HoldMB x its process count. The BIGGEST idle processes are squeezed first, each only as far as needed, and
+    /// squeezing stops as soon as the app total reaches that target (busy processes are skipped unless RAM is
+    /// critical). No process goes below max(HoldFloorMB, HoldKeepPercent % of its size, the safe level learned for
+    /// this app). Processes that appear later or grow back are handled on the next scan.
+    /// Without HoldMB (Custom) every process gets the target's own CeilingMB.</summary>
+    void HoldGroup(List<Proc> procs, Target t, bool crit = false)
     {
         var fresh = procs.Where(x => !_limited.ContainsKey(x.Pid) && !_failLogged.Contains(x.Pid)).ToList();
         if (fresh.Count == 0) return;
         var pr0 = P;
         long perProc = (long)pr0.HoldMB * MB;
-        long app = perProc * procs.Count;
-        bool first = !procs.Any(x => _limited.ContainsKey(x.Pid));
-        long sumWs = Math.Max(1, fresh.Sum(x => x.Ws));
         long min = t.MinCeilingMB * MB, max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
+
+        if (perProc <= 0)
+        {
+            foreach (var x in fresh) HoldProcess(x.Pid, Math.Clamp(t.CeilingMB * MB, min, max), x.Ws);
+            return;
+        }
+
+        long target = perProc * procs.Count;
+        long projected = procs.Sum(x => x.Ws);
         long floorAbs = Math.Max(8, pr0.HoldFloorMB > 0 ? pr0.HoldFloorMB : Config.HoldMinProcessMB) * MB;
         double keep = Math.Clamp(pr0.HoldKeepPct > 0 ? pr0.HoldKeepPct : Config.HoldKeepPercent, 0, 100) / 100.0;
-        foreach (var x in fresh)
+        long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe) * MB : 0;
+        double busyLimit = crit ? pr0.BusyCrit : pr0.Busy;
+
+        // idle first, then biggest first
+        foreach (var x in fresh.OrderBy(x => x.Known && x.Cpu >= busyLimit ? 1 : 0).ThenByDescending(x => x.Ws))
         {
-            long cap;
-            if (perProc <= 0) cap = Math.Clamp(t.CeilingMB * MB, min, max);
-            else
-            {
-                long share = first ? app * x.Ws / sumWs : perProc;
-                long floor = Math.Max(floorAbs, (long)(x.Ws * keep));
-                cap = Math.Max(share, floor);
-            }
-            HoldProcess(x.Pid, cap, x.Ws);
+            if (projected <= target) break;                       // target reached: leave the rest alone
+            if (x.Known && x.Cpu >= busyLimit && !crit) continue; // busy now: not under normal pressure
+            long safe = learned > 0 ? Math.Min(learned, x.Ws) : 0;
+            long floor = Math.Max(Math.Max(floorAbs, (long)(x.Ws * keep)), safe);
+            long cap = Math.Max(floor, x.Ws - (projected - target));
+            if (cap >= x.Ws) continue;                            // already at its floor: nothing to gain
+            HoldProcess(x.Pid, cap, x.Ws, safe);
+            projected -= x.Ws - cap;
         }
     }
 
@@ -108,7 +121,11 @@ internal sealed partial class Engine
                 // Starting to stutter: give room back and remember this level as safe for a while.
                 st.QuietSecs = 0;
                 next = Math.Min(hi, st.Ceiling + Math.Max(16 * MB, st.Ceiling / 4));
-                if (auto) { st.Floor = next; st.FloorUntil = now.AddMinutes(5); }
+                if (auto)
+                {
+                    st.Floor = next; st.FloorUntil = now.AddMinutes(5);
+                    if (c.LearnFloors) LearnedStore.Raise(t.Exe, (int)(next / MB));
+                }
             }
             else if (rate < faultRate * 0.2)
             {
@@ -144,6 +161,8 @@ internal sealed partial class Engine
         }
         if ((now - _lastSmart).TotalSeconds < Math.Max(0.5, P.Scan)) return;
         _lastSmart = now;
+        RefreshAudio(now);
+        LearnedStore.Flush(false);
 
         double freePct = Native.FreeRamPercent();
         var pr = P;
@@ -192,6 +211,10 @@ internal sealed partial class Engine
             finally { p.Dispose(); }
         }
         foreach (var pid in _cpuPrev.Keys.Where(k => !seen.Contains(k)).ToList()) _cpuPrev.Remove(pid);
+        // Memory priority: give it back to processes that left the list (exited, or now excluded as a game).
+        RestorePriority(_prio.Keys.Where(k => !seen.Contains(k)).ToList());
+        _prioFail.RemoveWhere(k => !seen.Contains(k));
+        if (!Config.LowerMemoryPriority) RestoreAllPriorities();
         foreach (var pid in _limited.Keys.Where(k => !seen.Contains(k)).ToList())
         {
             // Process exited, or is now excluded (game detected): lift the ceiling if it is still the same process.
@@ -217,7 +240,17 @@ internal sealed partial class Engine
             if (_exempt.Contains(name))
             {
                 g.LastFocused = now; g.Pending = false;
+                if (_prio.Count > 0) RestorePriority(procs.Select(x => x.Pid).Where(_prio.ContainsKey).ToList());
                 if (g.Holding || _limited.Count > 0) { g.Holding = false; ReleaseByName(name); }   // focused: ceiling off at once
+                continue;
+            }
+
+            // Playing sound or using the mic (Discord call, Spotify): leave it completely alone, lift any ceiling.
+            if (IsAudioActive(name))
+            {
+                g.Pending = false;
+                if (g.Holding || _limited.Count > 0) { g.Holding = false; ReleaseByName(name); }
+                if (_prio.Count > 0) RestorePriority(procs.Select(x => x.Pid).Where(_prio.ContainsKey).ToList());
                 continue;
             }
 
@@ -226,7 +259,7 @@ internal sealed partial class Engine
             // Keep a background app that was already trimmed from growing back (also new child processes).
             if (g.Holding && Config.HoldBackground)
             {
-                HoldGroup(procs, t);
+                HoldGroup(procs, t, level == 2);
                 TuneHeld(procs, t);
             }
 
@@ -252,6 +285,9 @@ internal sealed partial class Engine
                 }
             }
 
+            // Low memory priority for background apps: no cap, Windows just takes their pages first when RAM is short.
+            if (Config.LowerMemoryPriority && (now - g.LastFocused).TotalSeconds >= pr.Grace) LowerPriority(procs);
+
             if (level == 0) continue;
             if ((now - g.LastFocused).TotalSeconds < pr.Grace) continue;
 
@@ -260,7 +296,7 @@ internal sealed partial class Engine
             if (Config.HoldBackground && pr.HoldMB > 0)
             {
                 g.Holding = true;
-                HoldGroup(procs, t);
+                HoldGroup(procs, t, level == 2);
                 continue;
             }
             double cooldown = Math.Min(600, pr.Cooldown * Math.Pow(2, g.Backoff));
@@ -284,7 +320,7 @@ internal sealed partial class Engine
             if (Config.HoldBackground)
             {
                 g.Holding = true;
-                HoldGroup(procs, t);
+                HoldGroup(procs, t, level == 2);
             }
 
             long after = 0, pfBase = 0;

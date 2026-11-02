@@ -72,5 +72,10 @@
   "AutoSqueeze": true,
   "AutoMinProcessMB": 16,
   "AutoFaultRate": 150,
-  "AutoProbeSeconds": 10
+  "AutoProbeSeconds": 10,
+  "AudioProtect": true,
+  "AudioProtectGraceSeconds": 8,
+  "LowerMemoryPriority": true,
+  "BackgroundMemoryPriority": 2,
+  "LearnFloors": true
 }

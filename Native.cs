@@ -151,4 +151,47 @@ internal static class Native
         }
         finally { CloseHandle(h); }
     }
+
+    // ---- Memory priority (Windows decides which pages to take first when RAM is short) ----
+    const uint PROCESS_SET_INFORMATION = 0x0200;
+    const int ProcessMemoryPriority = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MEMORY_PRIORITY_INFORMATION { public uint MemoryPriority; }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetProcessInformation(IntPtr process, int infoClass, ref MEMORY_PRIORITY_INFORMATION info, uint size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetProcessInformation(IntPtr process, int infoClass, ref MEMORY_PRIORITY_INFORMATION info, uint size);
+
+    /// <summary>Current memory priority of a process: 1 (very low) ... 5 (normal, the default).</summary>
+    public static bool GetMemoryPriority(int pid, out uint level)
+    {
+        level = 5;
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try
+        {
+            var info = new MEMORY_PRIORITY_INFORMATION();
+            if (!GetProcessInformation(h, ProcessMemoryPriority, ref info, (uint)Marshal.SizeOf<MEMORY_PRIORITY_INFORMATION>())) return false;
+            level = info.MemoryPriority;
+            return true;
+        }
+        finally { CloseHandle(h); }
+    }
+
+    /// <summary>Sets the memory priority (1 very low ... 5 normal). A low priority makes Windows take this process'
+    /// pages first when RAM is short, with no cap and no extra page faults while RAM is free.</summary>
+    public static bool SetMemoryPriority(int pid, uint level)
+    {
+        var h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try
+        {
+            var info = new MEMORY_PRIORITY_INFORMATION { MemoryPriority = level };
+            return SetProcessInformation(h, ProcessMemoryPriority, ref info, (uint)Marshal.SizeOf<MEMORY_PRIORITY_INFORMATION>());
+        }
+        finally { CloseHandle(h); }
+    }
 }

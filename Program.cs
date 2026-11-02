@@ -53,7 +53,8 @@ sealed class TrayContext : ApplicationContext
     readonly List<ToolStripMenuItem> _profileItems = new();
     readonly List<ToolStripMenuItem> _modeItems = new();
     ToolStripMenuItem _holdItem = null!, _everythingItem = null!, _focusItem = null!,
-                      _fullscreenItem = null!, _pressureItem = null!, _autoItem = null!;
+                      _fullscreenItem = null!, _pressureItem = null!, _autoItem = null!,
+                      _audioItem = null!, _prioItem = null!;
     bool _syncing;
 
     public TrayContext()
@@ -113,12 +114,15 @@ sealed class TrayContext : ApplicationContext
         _autoItem       = Toggle("Auto-squeeze (lowest RAM without stutter)", v => _engine.Config.AutoSqueeze = v);
         _pressureItem   = Toggle("Only limit when RAM is low (Custom profile)", v => _engine.Config.LimitWhenRamFree = !v);
         _fullscreenItem = Toggle("Auto-detect fullscreen games",                v => _engine.Config.AutoDetectFullscreen = v);
+        _audioItem      = Toggle("Protect apps playing sound / using the mic",  v => _engine.Config.AudioProtect = v);
+        _prioItem       = Toggle("Low memory priority for background apps",     v => _engine.Config.LowerMemoryPriority = v);
         menu.Items.Add(options);
         RefreshModeChecks();
         menu.Items.Add("Choose apps...", null, (_, _) => ShowTargets());
         menu.Items.Add("Open config file", null, (_, _) =>
             Process.Start(new ProcessStartInfo(ConfigStore.FilePath) { UseShellExecute = true }));
         menu.Items.Add("Reload config", null, (_, _) => LoadConfig());
+        menu.Items.Add("Forget learned limits", null, (_, _) => { LearnedStore.Clear(); Logger.Write("Learned limits cleared."); });
         menu.Items.Add("Open log file", null, (_, _) => Logger.Open());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
@@ -160,7 +164,8 @@ sealed class TrayContext : ApplicationContext
     void RefreshModeChecks()
     {
         if (_focusItem == null || _everythingItem == null || _holdItem == null
-            || _pressureItem == null || _fullscreenItem == null || _autoItem == null) return; // menu not built yet (LoadConfig runs first)
+            || _pressureItem == null || _fullscreenItem == null || _autoItem == null
+            || _audioItem == null || _prioItem == null) return; // menu not built yet (LoadConfig runs first)
         _syncing = true;
         try
         {
@@ -175,6 +180,10 @@ sealed class TrayContext : ApplicationContext
             _autoItem.Enabled = c.IsSmart();
             _pressureItem.Checked = !c.LimitWhenRamFree;
             _fullscreenItem.Checked = c.AutoDetectFullscreen;
+            _audioItem.Checked = c.AudioProtect;
+            _audioItem.Enabled = c.IsSmart();
+            _prioItem.Checked = c.LowerMemoryPriority;
+            _prioItem.Enabled = c.IsSmart();
         }
         finally { _syncing = false; }
     }

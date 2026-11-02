@@ -98,3 +98,10 @@ its real use + 25% if the ceiling is not binding), down to `AutoMinProcessMB` (1
 more than `AutoFaultRate` (150/s) -> ceiling raised 25% and that level is kept as a floor for 5 minutes, then probed again.
 It never grows past what the process used before it was held (+20%). Toggle: tray > Options > Auto-squeeze.
 Focusing an app lifts its ceiling at once (the first moments after returning to it reload pages, that is unavoidable).
+
+## Smarter limiting (Smart mode)
+
+- **Audio protection** (`AudioProtect`, default on): an app that is playing sound or using the microphone (Discord call, Spotify) is not capped or trimmed while it does, plus `AudioProtectGraceSeconds` (8) after it stops. Detected through the Windows audio sessions (the volume mixer data), no extra packages.
+- **Low memory priority** (`LowerMemoryPriority`, default on; `BackgroundMemoryPriority` 1-4, default 2): background apps get a lower Windows memory priority. Nothing is capped; when RAM is short Windows takes their pages first. Focusing the app gives its original priority back at once. An app that already set an equal or lower priority itself is left alone. After End Task on GameRamCap the low priority stays on those apps until they restart; it only matters when RAM is short.
+- **Biggest idle first**: for each background app the target is `HoldMB x process count`. The biggest idle processes are squeezed first, each only as far as needed, and squeezing stops as soon as the target is reached. Busy processes are skipped unless RAM is critical.
+- **Remembered safe limits** (`LearnFloors`, default on): when auto-squeeze finds that a process starts page-faulting at a level, that level is saved per app in `%APPDATA%\GameRamCap\learned.json` and used as the floor next time (entries expire after 14 days). It is a separate file because saving `config.json` makes the app reload. Tray > **Forget learned limits** clears it.

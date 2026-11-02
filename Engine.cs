@@ -88,5 +88,5 @@ internal sealed partial class Engine : IDisposable
     static T[] Safe<T>(Func<T[]> f) { try { return f(); } catch { return Array.Empty<T>(); } }
     static T Safe<T>(Func<T> f, T fallback) { try { return f(); } catch { return fallback; } }
 
-    public void Dispose() => RestoreAll();
+    public void Dispose() { RestoreAll(); LearnedStore.Flush(true); }
 }
