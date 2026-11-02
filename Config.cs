@@ -73,8 +73,8 @@ internal sealed class Config
     public int AutoProbeSeconds { get; set; } = 10;
     /// <summary>Hold mode: no process is squeezed below this percent of its current size when the ceiling is set.</summary>
     public int HoldKeepPercent { get; set; } = 60;
-    /// <summary>Smart mode: an app that is playing sound or using the microphone right now (Discord call, Spotify, ...)
-    /// is never capped or trimmed, so audio cannot crackle. Detected through the Windows audio sessions.</summary>
+    /// <summary>Smart mode: only the PROCESS that owns an active audio stream (playing sound or using the mic) is left
+    /// alone, so audio cannot crackle. The other processes of the same app are limited as usual.</summary>
     public bool AudioProtect { get; set; } = true;
     /// <summary>Seconds an app stays protected after its audio stops.</summary>
     public double AudioProtectGraceSeconds { get; set; } = 8;

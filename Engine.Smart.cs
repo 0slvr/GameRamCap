@@ -47,12 +47,12 @@ internal sealed partial class Engine
     }
 
     /// <summary>Caps the processes of one background app. With a preset HoldMB the target for the app is
-    /// HoldMB x its process count. The BIGGEST idle processes are squeezed first, each only as far as needed, and
-    /// squeezing stops as soon as the app total reaches that target (busy processes are skipped unless RAM is
-    /// critical). No process goes below max(HoldFloorMB, HoldKeepPercent % of its size, the safe level learned for
+    /// HoldMB x its process count. The BIGGEST processes are squeezed first, each only as far as needed, and
+    /// squeezing stops as soon as the app total reaches that target. CPU use is not a criterion (RAM and CPU are
+    /// unrelated); stutter is detected from page faults in TuneHeld. No process goes below max(HoldFloorMB, HoldKeepPercent % of its size, the safe level learned for
     /// this app). Processes that appear later or grow back are handled on the next scan.
     /// Without HoldMB (Custom) every process gets the target's own CeilingMB.</summary>
-    void HoldGroup(List<Proc> procs, Target t, bool crit = false)
+    void HoldGroup(List<Proc> procs, Target t)
     {
         var fresh = procs.Where(x => !_limited.ContainsKey(x.Pid) && !_failLogged.Contains(x.Pid)).ToList();
         if (fresh.Count == 0) return;
@@ -71,13 +71,11 @@ internal sealed partial class Engine
         long floorAbs = Math.Max(8, pr0.HoldFloorMB > 0 ? pr0.HoldFloorMB : Config.HoldMinProcessMB) * MB;
         double keep = Math.Clamp(pr0.HoldKeepPct > 0 ? pr0.HoldKeepPct : Config.HoldKeepPercent, 0, 100) / 100.0;
         long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe) * MB : 0;
-        double busyLimit = crit ? pr0.BusyCrit : pr0.Busy;
 
-        // idle first, then biggest first
-        foreach (var x in fresh.OrderBy(x => x.Known && x.Cpu >= busyLimit ? 1 : 0).ThenByDescending(x => x.Ws))
+        // biggest first: the fewest processes have to be touched to reach the target
+        foreach (var x in fresh.OrderByDescending(x => x.Ws))
         {
             if (projected <= target) break;                       // target reached: leave the rest alone
-            if (x.Known && x.Cpu >= busyLimit && !crit) continue; // busy now: not under normal pressure
             long safe = learned > 0 ? Math.Min(learned, x.Ws) : 0;
             long floor = Math.Max(Math.Max(floorAbs, (long)(x.Ws * keep)), safe);
             long cap = Math.Max(floor, x.Ws - (projected - target));
@@ -228,13 +226,27 @@ internal sealed partial class Engine
         }
 
         // 2) Decide per app.
-        foreach (var (name, procs) in byName)
+        foreach (var (name, allProcs) in byName)
         {
             var t = ResolveTarget(name);
             if (!_groups.TryGetValue(name, out var g))
             {
                 long b = (long)((t.BudgetMB > 0 ? t.BudgetMB : Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB * pr.BudgetScale);
                 g = _groups[name] = new Group { Budget = b, BaseBudget = b };
+            }
+
+            // Only the process that owns an active audio stream (the audio service of Discord/Chrome, the player
+            // of Spotify) is left alone; the rest of the app is limited as usual.
+            var procs = allProcs;
+            if (_audioSeen.Count > 0)
+            {
+                var audio = allProcs.Where(x => IsAudioActive(x.Pid)).ToList();
+                if (audio.Count > 0)
+                {
+                    foreach (var x in audio) { ReleasePid(x.Pid); RestorePriority(new List<int> { x.Pid }); }
+                    procs = allProcs.Where(x => !IsAudioActive(x.Pid)).ToList();
+                    if (procs.Count == 0) { g.Pending = false; continue; }
+                }
             }
 
             if (_exempt.Contains(name))
@@ -245,21 +257,12 @@ internal sealed partial class Engine
                 continue;
             }
 
-            // Playing sound or using the mic (Discord call, Spotify): leave it completely alone, lift any ceiling.
-            if (IsAudioActive(name))
-            {
-                g.Pending = false;
-                if (g.Holding || _limited.Count > 0) { g.Holding = false; ReleaseByName(name); }
-                if (_prio.Count > 0) RestorePriority(procs.Select(x => x.Pid).Where(_prio.ContainsKey).ToList());
-                continue;
-            }
-
             long total = procs.Sum(x => x.Ws);
 
             // Keep a background app that was already trimmed from growing back (also new child processes).
             if (g.Holding && Config.HoldBackground)
             {
-                HoldGroup(procs, t, level == 2);
+                HoldGroup(procs, t);
                 TuneHeld(procs, t);
             }
 
@@ -296,7 +299,7 @@ internal sealed partial class Engine
             if (Config.HoldBackground && pr.HoldMB > 0)
             {
                 g.Holding = true;
-                HoldGroup(procs, t, level == 2);
+                HoldGroup(procs, t);
                 continue;
             }
             double cooldown = Math.Min(600, pr.Cooldown * Math.Pow(2, g.Backoff));
@@ -320,7 +323,7 @@ internal sealed partial class Engine
             if (Config.HoldBackground)
             {
                 g.Holding = true;
-                HoldGroup(procs, t, level == 2);
+                HoldGroup(procs, t);
             }
 
             long after = 0, pfBase = 0;

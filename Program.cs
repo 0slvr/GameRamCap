@@ -114,7 +114,7 @@ sealed class TrayContext : ApplicationContext
         _autoItem       = Toggle("Auto-squeeze (lowest RAM without stutter)", v => _engine.Config.AutoSqueeze = v);
         _pressureItem   = Toggle("Only limit when RAM is low (Custom profile)", v => _engine.Config.LimitWhenRamFree = !v);
         _fullscreenItem = Toggle("Auto-detect fullscreen games",                v => _engine.Config.AutoDetectFullscreen = v);
-        _audioItem      = Toggle("Protect apps playing sound / using the mic",  v => _engine.Config.AudioProtect = v);
+        _audioItem      = Toggle("Protect only the process that plays sound / uses the mic",  v => _engine.Config.AudioProtect = v);
         _prioItem       = Toggle("Low memory priority for background apps",     v => _engine.Config.LowerMemoryPriority = v);
         menu.Items.Add(options);
         RefreshModeChecks();

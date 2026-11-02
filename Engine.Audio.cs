@@ -7,8 +7,11 @@ namespace GameRamCap;
 //  * Memory priority: background apps get a low Windows memory priority instead of (or besides) a ceiling.
 internal sealed partial class Engine
 {
-    // ---------- audio protection ----------
-    readonly Dictionary<string, DateTime> _audioSeen = new(StringComparer.OrdinalIgnoreCase);
+    // ---------- audio protection (per process) ----------
+    // Only the process that owns an active audio stream is protected, never the whole app: the audio service of
+    // Discord / Chrome is small, while its renderers and GPU process can still be squeezed.
+    readonly Dictionary<int, DateTime> _audioSeen = new();
+    readonly HashSet<string> _audioLogged = new(StringComparer.OrdinalIgnoreCase);
     DateTime _audioPoll = DateTime.MinValue;
 
     void RefreshAudio(DateTime now)
@@ -19,20 +22,36 @@ internal sealed partial class Engine
             _audioPoll = now;
             foreach (int pid in AudioSessions.ActivePids())
             {
-                try
+                if (!_audioSeen.ContainsKey(pid))
                 {
-                    using var p = Process.GetProcessById(pid);
-                    if (!_audioSeen.ContainsKey(p.ProcessName)) Logger.Write($"{p.ProcessName} is using audio - protected while it plays.");
-                    _audioSeen[p.ProcessName] = now;
+                    try
+                    {
+                        using var p = Process.GetProcessById(pid);
+                        if (_audioLogged.Add(p.ProcessName)) Logger.Write($"{p.ProcessName} (pid {pid}) owns an audio stream - that process is left alone, the rest of the app is limited.");
+                    }
+                    catch { }
                 }
-                catch { }
+                _audioSeen[pid] = now;
             }
         }
         var grace = TimeSpan.FromSeconds(Math.Max(0, Config.AudioProtectGraceSeconds));
         foreach (var k in _audioSeen.Keys.Where(k => now - _audioSeen[k] > grace).ToList()) _audioSeen.Remove(k);
     }
 
-    bool IsAudioActive(string name) => _audioSeen.ContainsKey(name);
+    bool IsAudioActive(int pid) => _audioSeen.ContainsKey(pid);
+
+    /// <summary>Lifts the ceiling of one process (if it still is the same process).</summary>
+    void ReleasePid(int pid)
+    {
+        if (!_limited.TryGetValue(pid, out var st)) return;
+        try
+        {
+            using var p = Process.GetProcessById(pid);
+            if (p.StartTime == st.Start) Native.Release(pid, st.OrigMin, st.OrigMax);
+        }
+        catch { }
+        _limited.Remove(pid);
+    }
 
     // ---------- memory priority ----------
     readonly Dictionary<int, (DateTime Start, uint Orig)> _prio = new();
