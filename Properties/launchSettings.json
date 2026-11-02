@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "GameRamCap": {
+      "commandName": "Project"
+    },
+    "Upload to GitHub": {
+      "commandName": "Executable",
+      "executablePath": "powershell.exe",
+      "commandLineArgs": "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"$(ProjectDir)upload-github.ps1\"",
+      "workingDirectory": "$(ProjectDir)"
+    }
+  }
+}
