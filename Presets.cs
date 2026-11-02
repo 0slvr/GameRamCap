@@ -40,6 +40,24 @@ internal static class Presets
         if (string.Equals(key, "Custom", StringComparison.OrdinalIgnoreCase))
             return new Preset("Custom", c.LimitWhenRamFree, c.PressureFreePercent, c.CriticalFreePercent,
                 c.SmartScanSeconds, c.TrimCooldownSeconds, c.GraceAfterFocusSeconds, 1.0, 0.15, 0.5, 40, 0.5);
-        return Map.TryGetValue(key, out var p) ? p : Map["Balanced"];
+        var p = Map.TryGetValue(key, out var found) ? found : Map["Balanced"];
+        PresetOverride? o = null;
+        if (c.PresetOverrides != null)
+            foreach (var kv in c.PresetOverrides)
+                if (string.Equals(kv.Key, p.Name, StringComparison.OrdinalIgnoreCase)) { o = kv.Value; break; }
+        if (o == null) return p;
+        return p with
+        {
+            Scan        = Math.Max(0.5, o.Scan ?? p.Scan),
+            HoldMB      = Math.Max(1, o.HoldMB ?? p.HoldMB),
+            Cooldown    = Math.Max(0, o.Cooldown ?? p.Cooldown),
+            Grace       = Math.Max(0, o.Grace ?? p.Grace),
+            BudgetScale = Math.Clamp(o.BudgetScale ?? p.BudgetScale, 0.1, 10),
+            MinProcMB   = Math.Max(1, o.MinProcMB ?? p.MinProcMB),
+            CritFactor  = Math.Clamp(o.CritFactor ?? p.CritFactor, 0.1, 1),
+        };
     }
+
+    /// <summary>Built-in values of a level, ignoring user edits.</summary>
+    public static Preset Default(string name) => Map[name];
 }

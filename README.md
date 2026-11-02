@@ -21,6 +21,18 @@ It does not clean memory periodically. It uses the documented `SetProcessWorking
 
 **Hard** - the old behaviour: fixed hard per-process ceilings. Set `"Mode": "Hard"`.
 
+## Choosing the mode (tray menu)
+
+Right-click the tray icon:
+
+- **Mode** > Smart / Hard - switch the whole behaviour live.
+- **Intensity** > Ultra Performance ... Ultra Safe, or **Custom** (uses the numbers in config.json).
+- **Options** > Focus mode, Limit all apps, Hold background apps, Only limit when RAM is low, Auto-detect fullscreen games.
+
+**Intensity > Edit levels...** opens a table with the five levels so you can change each one's check interval, ceiling per app, cooldown, grace, budget scale, minimum process size and critical factor. Only the values you change are stored (`PresetOverrides` in config.json); "Reset all to defaults" clears them.
+
+Every choice is saved to `config.json` and applied immediately (limits are released and re-applied with the new mode).
+
 ## Build
 
 Requires the .NET 8 SDK.

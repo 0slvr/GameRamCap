@@ -18,8 +18,22 @@ internal sealed class Target
     public int BudgetMB { get; set; } = 0;
 }
 
+/// <summary>User edits of one intensity level. A null field means "use the built-in value".</summary>
+internal sealed class PresetOverride
+{
+    public double? Scan { get; set; }
+    public int? HoldMB { get; set; }
+    public double? Cooldown { get; set; }
+    public double? Grace { get; set; }
+    public double? BudgetScale { get; set; }
+    public int? MinProcMB { get; set; }
+    public double? CritFactor { get; set; }
+}
+
 internal sealed class Config
 {
+    /// <summary>Edits of the five intensity levels, keyed by level name (UltraPerformance ... UltraSafe).</summary>
+    public Dictionary<string, PresetOverride> PresetOverrides { get; set; } = new();
     public bool Enabled { get; set; } = true;
     /// <summary>"Smart" (default): no hard caps. Background apps are trimmed gently, only when Windows is short on RAM,
     /// per app (all its processes together), and the budget adapts if the app fights back.

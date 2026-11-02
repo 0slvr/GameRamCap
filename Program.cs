@@ -26,6 +26,10 @@ sealed class TrayContext : ApplicationContext
     DateTime _configStamp;
     TargetsForm? _targetsForm;
     readonly List<ToolStripMenuItem> _profileItems = new();
+    readonly List<ToolStripMenuItem> _modeItems = new();
+    ToolStripMenuItem _holdItem = null!, _everythingItem = null!, _focusItem = null!,
+                      _fullscreenItem = null!, _pressureItem = null!;
+    bool _syncing;
 
     public TrayContext()
     {
@@ -51,8 +55,40 @@ sealed class TrayContext : ApplicationContext
             _profileItems.Add(item);
             intensity.DropDownItems.Add(item);
         }
+        var customItem = new ToolStripMenuItem("Custom (use config.json numbers)") { Tag = "Custom" };
+        customItem.Click += (_, _) => SetProfile("Custom");
+        _profileItems.Add(customItem);
+        intensity.DropDownItems.Add(new ToolStripSeparator());
+        intensity.DropDownItems.Add(customItem);
+        intensity.DropDownItems.Add("Edit levels...", null, (_, _) => ShowIntensity());
         menu.Items.Add(intensity);
         RefreshProfileChecks();
+        // ---- Modes: the user decides how the tool behaves ----
+        var modeMenu = new ToolStripMenuItem("Mode");
+        foreach (var (key, label) in new[] { ("Smart", "Smart (gentle, adaptive)"), ("Hard", "Hard (fixed ceilings)") })
+        {
+            var mi = new ToolStripMenuItem(label) { Tag = key };
+            mi.Click += (_, _) => { SetMode(key); };
+            _modeItems.Add(mi);
+            modeMenu.DropDownItems.Add(mi);
+        }
+        menu.Items.Add(modeMenu);
+
+        var options = new ToolStripMenuItem("Options");
+        ToolStripMenuItem Toggle(string text, Action<bool> apply)
+        {
+            var t = new ToolStripMenuItem(text) { CheckOnClick = true };
+            t.CheckedChanged += (_, _) => { if (!_syncing) { apply(t.Checked); SaveCfg(); } };
+            options.DropDownItems.Add(t);
+            return t;
+        }
+        _focusItem      = Toggle("Focus mode (never limit the app I'm using)", v => _engine.Config.FocusMode = v);
+        _everythingItem = Toggle("Limit all apps, not just my list",           v => _engine.Config.LimitEverything = v);
+        _holdItem       = Toggle("Hold background apps (hard ceiling, Smart)",  v => _engine.Config.HoldBackground = v);
+        _pressureItem   = Toggle("Only limit when RAM is low (Custom profile)", v => _engine.Config.LimitWhenRamFree = !v);
+        _fullscreenItem = Toggle("Auto-detect fullscreen games",                v => _engine.Config.AutoDetectFullscreen = v);
+        menu.Items.Add(options);
+        RefreshModeChecks();
         menu.Items.Add("Choose apps...", null, (_, _) => ShowTargets());
         menu.Items.Add("Open config file", null, (_, _) =>
             Process.Start(new ProcessStartInfo(ConfigStore.FilePath) { UseShellExecute = true }));
@@ -81,6 +117,38 @@ sealed class TrayContext : ApplicationContext
         _timer.Start();
     }
 
+    void SaveCfg()
+    {
+        try { ConfigStore.Save(_engine.Config); try { _configStamp = File.GetLastWriteTimeUtc(ConfigStore.FilePath); } catch { } } catch { }
+        _engine.RestoreAll(); // re-applied with the new mode on the next tick
+        RefreshModeChecks();
+    }
+
+    void SetMode(string mode)
+    {
+        _engine.Config.Mode = mode;
+        Logger.Write($"Mode set to {mode}.");
+        SaveCfg();
+    }
+
+    void RefreshModeChecks()
+    {
+        _syncing = true;
+        try
+        {
+            var c = _engine.Config;
+            foreach (var it in _modeItems)
+                it.Checked = string.Equals((string?)it.Tag, c.IsSmart() ? "Smart" : "Hard", StringComparison.OrdinalIgnoreCase);
+            _focusItem.Checked = c.FocusMode;
+            _everythingItem.Checked = c.LimitEverything;
+            _holdItem.Checked = c.HoldBackground;
+            _holdItem.Enabled = c.IsSmart();
+            _pressureItem.Checked = !c.LimitWhenRamFree;
+            _fullscreenItem.Checked = c.AutoDetectFullscreen;
+        }
+        finally { _syncing = false; }
+    }
+
     void SetProfile(string key)
     {
         _engine.Config.Profile = key;
@@ -96,6 +164,14 @@ sealed class TrayContext : ApplicationContext
             it.Checked = string.Equals((string?)it.Tag, cur, StringComparison.OrdinalIgnoreCase);
     }
 
+    IntensityForm? _intensityForm;
+    void ShowIntensity()
+    {
+        if (_intensityForm is { IsDisposed: false }) { _intensityForm.Activate(); return; }
+        _intensityForm = new IntensityForm();
+        _intensityForm.Show();
+    }
+
     void ShowTargets()
     {
         if (_targetsForm is { IsDisposed: false }) { _targetsForm.Activate(); return; }
@@ -109,6 +185,7 @@ sealed class TrayContext : ApplicationContext
         _engine.Config = ConfigStore.Load();
         try { _configStamp = File.GetLastWriteTimeUtc(ConfigStore.FilePath); } catch { }
         RefreshProfileChecks();
+        RefreshModeChecks();
     }
 
     void OnTick()

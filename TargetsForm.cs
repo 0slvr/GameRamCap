@@ -211,15 +211,18 @@ internal sealed class TargetsForm : Form
             list.Add(new Target { Exe = exe, CeilingMB = ceil, MinCeilingMB = min, MaxCeilingMB = max, Adaptive = adaptive,
                                   FocusAlso = old?.FocusAlso ?? new(), BudgetMB = old?.BudgetMB ?? 0 });
         }
-        _cfg.Targets = list;
-        _cfg.FocusMode = _focus.Checked;
-        _cfg.LimitEverything = _everything.Checked;
+        // Start from the file as it is NOW, so Mode/Profile/options changed from the tray meanwhile are kept.
+        var cur = ConfigStore.Load();
+        cur.Exceptions = _cfg.Exceptions;
+        cur.Targets = list;
+        cur.FocusMode = _focus.Checked;
+        cur.LimitEverything = _everything.Checked;
         int d = (int)_defCeil.Value;
-        _cfg.DefaultCeilingMB = d;
-        _cfg.DefaultAdaptive = !_defFixed.Checked;
-        _cfg.DefaultMinCeilingMB = _defFixed.Checked ? d : Math.Max(20, d / 2);
-        _cfg.DefaultMaxCeilingMB = _defFixed.Checked ? d : d * 3;
-        ConfigStore.Save(_cfg); // the tray app notices the saved file and reloads within a second
+        cur.DefaultCeilingMB = d;
+        cur.DefaultAdaptive = !_defFixed.Checked;
+        cur.DefaultMinCeilingMB = _defFixed.Checked ? d : Math.Max(20, d / 2);
+        cur.DefaultMaxCeilingMB = _defFixed.Checked ? d : d * 3;
+        ConfigStore.Save(cur); // the tray app notices the saved file and reloads within a second
 
         // show the clamped values back in the grid
         _grid.Rows.Clear();

@@ -113,7 +113,10 @@ internal sealed class ExceptionsForm : Form
 
     void Persist()
     {
-        ConfigStore.Save(_cfg); // the tray app reloads the file within a second
+        // Merge into the file as it is now so Mode/options changed from the tray meanwhile are kept.
+        var cur = ConfigStore.Load();
+        cur.Exceptions = _cfg.Exceptions;
+        ConfigStore.Save(cur); // the tray app reloads the file within a second
         FillList();
         RefreshRunning();
     }
