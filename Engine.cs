@@ -20,6 +20,8 @@ internal sealed partial class Engine : IDisposable
         "MpDefenderCoreService", "SgrmBroker", "NVDisplay.Container", "nvcontainer", "RadeonSoftware", "AMDRSServ",
         "RtkAudUService64", "vmware-vmx", "VirtualBoxVM", "VBoxHeadless", "vmwp", "qemu-system-x86_64",
         "FACEITService", "FACEIT", "GameGuard", "xhunter1",
+        // Shell + recording/streaming tools: trimming these causes lag or dropped frames.
+        "explorer", "obs64", "obs32", "Streamlabs OBS", "NVIDIA Share", "nvsphelper64", "ShellHost", "SearchIndexer",
     };
 
     readonly Dictionary<int, Limited> _limited = new();

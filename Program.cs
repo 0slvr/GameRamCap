@@ -25,6 +25,7 @@ sealed class TrayContext : ApplicationContext
     readonly ToolStripMenuItem _statusItem;
     DateTime _configStamp;
     TargetsForm? _targetsForm;
+    readonly List<ToolStripMenuItem> _profileItems = new();
 
     public TrayContext()
     {
@@ -41,6 +42,17 @@ sealed class TrayContext : ApplicationContext
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_enabledItem);
+        var intensity = new ToolStripMenuItem("Intensity");
+        for (int i = 0; i < Presets.Names.Length; i++)
+        {
+            string key = Presets.Names[i];
+            var item = new ToolStripMenuItem(Presets.Labels[i]) { Tag = key };
+            item.Click += (_, _) => SetProfile(key);
+            _profileItems.Add(item);
+            intensity.DropDownItems.Add(item);
+        }
+        menu.Items.Add(intensity);
+        RefreshProfileChecks();
         menu.Items.Add("Choose apps...", null, (_, _) => ShowTargets());
         menu.Items.Add("Open config file", null, (_, _) =>
             Process.Start(new ProcessStartInfo(ConfigStore.FilePath) { UseShellExecute = true }));
@@ -69,6 +81,21 @@ sealed class TrayContext : ApplicationContext
         _timer.Start();
     }
 
+    void SetProfile(string key)
+    {
+        _engine.Config.Profile = key;
+        try { ConfigStore.Save(_engine.Config); } catch { }
+        Logger.Write($"Intensity set to {key}.");
+        RefreshProfileChecks();
+    }
+
+    void RefreshProfileChecks()
+    {
+        var cur = Presets.Resolve(_engine.Config).Name;
+        foreach (var it in _profileItems)
+            it.Checked = string.Equals((string?)it.Tag, cur, StringComparison.OrdinalIgnoreCase);
+    }
+
     void ShowTargets()
     {
         if (_targetsForm is { IsDisposed: false }) { _targetsForm.Activate(); return; }
@@ -81,6 +108,7 @@ sealed class TrayContext : ApplicationContext
         _engine.RestoreAll(); // targets may have changed: release old limits, they are re-applied next tick
         _engine.Config = ConfigStore.Load();
         try { _configStamp = File.GetLastWriteTimeUtc(ConfigStore.FilePath); } catch { }
+        RefreshProfileChecks();
     }
 
     void OnTick()

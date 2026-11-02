@@ -46,6 +46,7 @@ internal sealed partial class Engine
 
         // Focus changes are handled every tick: lift the limit at once.
         foreach (var name in _exempt) ReleaseByName(name);
+        foreach (var name in _gameNames) ReleaseByName(name); // detected games are never capped
 
         var now = DateTime.UtcNow;
         string key = string.Join("|", _exempt.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
@@ -65,7 +66,7 @@ internal sealed partial class Engine
                 if (_failLogged.Contains(pid)) continue;           // access denied before: do not retry
 
                 string name = p.ProcessName;
-                if (Protected.Contains(name) || IsException(name) || _exempt.Contains(name)) continue;
+                if (Protected.Contains(name) || IsException(name) || _exempt.Contains(name) || _gameNames.Contains(name)) continue;
 
                 DateTime start = Safe(() => p.StartTime, DateTime.MinValue);
                 var t = ResolveTarget(name);

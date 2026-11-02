@@ -29,6 +29,7 @@ internal sealed partial class Engine
     DateTime _lastSmart = DateTime.MinValue;
     string _smartInfo = "Smart: starting";
     const long PageSize = 4096;
+    Preset P => Presets.Resolve(Config);
 
     void ApplySmart()
     {
@@ -39,19 +40,20 @@ internal sealed partial class Engine
             _synth.Clear(); _groups.Clear(); _cpuPrev.Clear(); _failLogged.Clear();
             _lastSmart = DateTime.MinValue;
         }
-        if ((now - _lastSmart).TotalSeconds < Math.Max(0.5, Config.SmartScanSeconds)) return;
+        if ((now - _lastSmart).TotalSeconds < Math.Max(0.5, P.Scan)) return;
         _lastSmart = now;
 
         double freePct = Native.FreeRamPercent();
+        var pr = P;
         int level = freePct < 0 ? 0
-                  : freePct < Config.CriticalFreePercent ? 2
-                  : freePct < Config.PressureFreePercent ? 1 : 0;
-        bool always = level == 0 && Config.LimitWhenRamFree;
+                  : freePct < pr.Critical ? 2
+                  : freePct < pr.Pressure ? 1 : 0;
+        bool always = level == 0 && pr.Always;
         if (always) level = 1;
-        _smartInfo = always ? $"Smart: RAM free {freePct:0}% - keeping background apps in budget"
-                   : level == 0 ? $"Smart: RAM free {freePct:0}% - nothing touched"
-                   : level == 1 ? $"Smart: RAM free {freePct:0}% - trimming idle background apps"
-                   :              $"Smart: RAM low ({freePct:0}%) - trimming harder";
+        _smartInfo = always ? $"{pr.Name}: RAM free {freePct:0}% - keeping background apps in budget"
+                   : level == 0 ? $"{pr.Name}: RAM free {freePct:0}% - nothing touched"
+                   : level == 1 ? $"{pr.Name}: RAM free {freePct:0}% - trimming idle background apps"
+                   :              $"{pr.Name}: RAM low ({freePct:0}%) - trimming harder";
 
         // 1) Collect processes, grouped by app name.
         var byName = new Dictionary<string, List<Proc>>(StringComparer.OrdinalIgnoreCase);
@@ -65,6 +67,7 @@ internal sealed partial class Engine
                 string name = p.ProcessName;
                 if (Protected.Contains(name) || IsException(name)) continue;
                 if (Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase)) continue; // never trim your games
+                if (_gameNames.Contains(name)) continue;                                      // nor detected fullscreen games
                 if (!Config.LimitEverything &&
                     !Config.Targets.Any(t => string.Equals(t.Exe, name, StringComparison.OrdinalIgnoreCase))) continue;
 
@@ -94,7 +97,7 @@ internal sealed partial class Engine
             var t = ResolveTarget(name);
             if (!_groups.TryGetValue(name, out var g))
             {
-                long b = (t.BudgetMB > 0 ? t.BudgetMB : Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB;
+                long b = (long)((t.BudgetMB > 0 ? t.BudgetMB : Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB * pr.BudgetScale);
                 g = _groups[name] = new Group { Budget = b, BaseBudget = b };
             }
 
@@ -125,17 +128,17 @@ internal sealed partial class Engine
             }
 
             if (level == 0) continue;
-            if ((now - g.LastFocused).TotalSeconds < Config.GraceAfterFocusSeconds) continue;
-            double cooldown = Math.Min(600, Config.TrimCooldownSeconds * Math.Pow(2, g.Backoff));
+            if ((now - g.LastFocused).TotalSeconds < pr.Grace) continue;
+            double cooldown = Math.Min(600, pr.Cooldown * Math.Pow(2, g.Backoff));
             if ((now - g.LastTrim).TotalSeconds < cooldown) continue;
 
-            long target = level == 2 ? Math.Max(t.MinCeilingMB * MB, g.Budget / 2) : g.Budget;
+            long target = level == 2 ? Math.Max((long)(t.MinCeilingMB * MB * Math.Min(1.0, pr.BudgetScale)), (long)(g.Budget * pr.CritFactor)) : g.Budget;
             if (total <= target) continue;
 
             // Trim the biggest idle processes first, only as many as needed to reach the budget.
-            double busyLimit = level == 2 ? 0.5 : 0.15;
+            double busyLimit = level == 2 ? pr.BusyCrit : pr.Busy;
             long projected = total; int trimmed = 0;
-            foreach (var v in procs.Where(x => x.Known && x.Ws >= 40 * MB && x.Cpu < busyLimit).OrderByDescending(x => x.Ws))
+            foreach (var v in procs.Where(x => x.Known && x.Ws >= pr.MinProcMB * MB && x.Cpu < busyLimit).OrderByDescending(x => x.Ws))
             {
                 if (projected <= target) break;
                 if (!Native.Trim(v.Pid)) { _failLogged.Add(v.Pid); continue; }

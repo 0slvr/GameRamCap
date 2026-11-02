@@ -27,7 +27,7 @@ internal sealed class Config
     public string Mode { get; set; } = "Smart";
     /// <summary>Smart mode: keep background apps within their budget ALL the time, even when plenty of RAM is free.
     /// false = only act under memory pressure (PressureFreePercent).</summary>
-    public bool LimitWhenRamFree { get; set; } = true;
+    public bool LimitWhenRamFree { get; set; } = false;
     /// <summary>Smart mode: with LimitWhenRamFree off, start trimming when available RAM drops below this percent.</summary>
     public int PressureFreePercent { get; set; } = 25;
     /// <summary>Smart mode: below this percent trimming gets stronger (budget halved).</summary>
@@ -35,9 +35,12 @@ internal sealed class Config
     /// <summary>Smart mode: how often the RAM state is checked.</summary>
     public double SmartScanSeconds { get; set; } = 2;
     /// <summary>Smart mode: minimum seconds between two trims of the same app (doubles when the app fights back).</summary>
-    public double TrimCooldownSeconds { get; set; } = 15;
+    public double TrimCooldownSeconds { get; set; } = 30;
     /// <summary>Smart mode: an app you just left is not touched for this many seconds (quick Alt+Tab back is instant).</summary>
-    public double GraceAfterFocusSeconds { get; set; } = 20;
+    public double GraceAfterFocusSeconds { get; set; } = 5;
+    /// <summary>Smart mode intensity: UltraPerformance, Performance, Balanced, Safe, UltraSafe, or Custom
+    /// (Custom uses the individual numbers above; the five profiles override them).</summary>
+    public string Profile { get; set; } = "Balanced";
     public bool IsSmart() => string.Equals(Mode, "Smart", StringComparison.OrdinalIgnoreCase);
     /// <summary>Focus mode: a target app is unlimited while it is the foreground app and limited again
     /// as soon as you click anywhere else. Works for every app in Targets, no game needed.</summary>

@@ -8,7 +8,10 @@ It does not clean memory periodically. It uses the documented `SetProcessWorking
 
 **Smart (default)** - no hard caps, so nothing can be starved or crash:
 
-- By default (`LimitWhenRamFree: true`) it keeps background apps in budget all the time. Set it to `false` to act only when free RAM drops below `PressureFreePercent` (25%).
+- By default (`LimitWhenRamFree: false`) it acts only when free RAM drops below `PressureFreePercent` (25%). Set it to `true` to keep background apps in budget all the time (more aggressive, more page faults).
+- Fullscreen/borderless apps seen in front are remembered as games and are never trimmed or capped while they run, even after Alt+Tab.
+- Apps that refused a trim are retried every 5 minutes instead of being ignored for the whole session.
+- `explorer` and recording tools (OBS, NVIDIA Share) are protected by default.
 - Under pressure, trims background apps softly (pages move to the standby list; the app takes them back instantly if needed, no disk).
 - The budget is per **app** (all its processes together). It is `BudgetMB`, or `MaxCeilingMB` when 0.
 - Never touches the focused app, an app you left in the last `GraceAfterFocusSeconds`, busy processes, or `Games`.
