@@ -1,6 +1,7 @@
 {
   "Enabled": true,
   "Mode": "Smart",
+  "LimitWhenRamFree": true,
   "PressureFreePercent": 25,
   "CriticalFreePercent": 10,
   "SmartScanSeconds": 2,

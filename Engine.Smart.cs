@@ -46,7 +46,10 @@ internal sealed partial class Engine
         int level = freePct < 0 ? 0
                   : freePct < Config.CriticalFreePercent ? 2
                   : freePct < Config.PressureFreePercent ? 1 : 0;
-        _smartInfo = level == 0 ? $"Smart: RAM free {freePct:0}% - nothing touched"
+        bool always = level == 0 && Config.LimitWhenRamFree;
+        if (always) level = 1;
+        _smartInfo = always ? $"Smart: RAM free {freePct:0}% - keeping background apps in budget"
+                   : level == 0 ? $"Smart: RAM free {freePct:0}% - nothing touched"
                    : level == 1 ? $"Smart: RAM free {freePct:0}% - trimming idle background apps"
                    :              $"Smart: RAM low ({freePct:0}%) - trimming harder";
 

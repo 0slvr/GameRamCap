@@ -25,7 +25,10 @@ internal sealed class Config
     /// per app (all its processes together), and the budget adapts if the app fights back.
     /// "Hard": the old fixed per-process hard ceilings.</summary>
     public string Mode { get; set; } = "Smart";
-    /// <summary>Smart mode: start trimming when available RAM drops below this percent.</summary>
+    /// <summary>Smart mode: keep background apps within their budget ALL the time, even when plenty of RAM is free.
+    /// false = only act under memory pressure (PressureFreePercent).</summary>
+    public bool LimitWhenRamFree { get; set; } = true;
+    /// <summary>Smart mode: with LimitWhenRamFree off, start trimming when available RAM drops below this percent.</summary>
     public int PressureFreePercent { get; set; } = 25;
     /// <summary>Smart mode: below this percent trimming gets stronger (budget halved).</summary>
     public int CriticalFreePercent { get; set; } = 10;
