@@ -31,6 +31,13 @@ internal sealed class Engine : IDisposable
     public Config Config { get; set; } = new();
     public bool Enabled { get; set; } = true;
     public string Status { get; private set; } = "Idle";
+    public string GameName { get; private set; } = "";
+    /// <summary>(title, text) - shown as a tray balloon when limiting starts / stops.</summary>
+    public event Action<string, string>? Notify;
+
+    bool _wasActive;
+    string _lastFg = "";
+    readonly HashSet<int> _failLogged = new();
 
     /// <summary>Clears hard ceilings a previous crashed run may have left on target apps.</summary>
     public void ClearStaleCeilings()
@@ -60,12 +67,35 @@ internal sealed class Engine : IDisposable
         bool active = gaming && (now - _gamingSince).TotalSeconds >= Config.DelaySeconds;
         if (!active)
         {
+            if (_wasActive)
+            {
+                _wasActive = false;
+                Logger.Write("Stopped limiting (left the game / disabled). Original limits restored.");
+                Notify?.Invoke("GameRamCap", "Limits released.");
+            }
+            _failLogged.Clear();
             RestoreAll();
             Status = !Enabled || !Config.Enabled ? "Disabled" : gaming ? "Game detected, waiting..." : "Idle";
             return;
         }
 
+        bool first = !_wasActive;
+        if (first)
+        {
+            _wasActive = true;
+            Logger.Write($"Game active: {GameName} - applying limits.");
+        }
         ApplyAndAdapt();
+        if (first)
+        {
+            if (_limited.Count == 0)
+            {
+                Logger.Write("No target processes (Discord, Spotify, ...) could be limited - none running, or access denied.");
+                Notify?.Invoke("GameRamCap", $"Game detected ({GameName}) but nothing to limit.");
+            }
+            else
+                Notify?.Invoke("GameRamCap", $"Limiting {_limited.Count} process(es) while {GameName} runs.");
+        }
         Status = $"Limiting {_limited.Count} process(es)";
     }
 
@@ -91,9 +121,19 @@ internal sealed class Engine : IDisposable
                         continue;
                     }
 
-                    if (!Native.TryGetLimits(pid, out var omin, out var omax)) continue;
+                    if (!Native.TryGetLimits(pid, out var omin, out var omax))
+                    {
+                        if (_failLogged.Add(pid)) Logger.Write($"Cannot open {t.Exe} (pid {pid}) - access denied. Try running GameRamCap as Administrator.");
+                        continue;
+                    }
                     long ceiling = Math.Clamp(t.CeilingMB, t.MinCeilingMB, Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB;
-                    if (!Native.SetCeiling(pid, ceiling)) continue;
+                    long wsNow = Safe(() => p.WorkingSet64, 0L);
+                    if (!Native.SetCeiling(pid, ceiling))
+                    {
+                        if (_failLogged.Add(pid)) Logger.Write($"Failed to set a ceiling on {t.Exe} (pid {pid}).");
+                        continue;
+                    }
+                    Logger.Write($"Limited {t.Exe} (pid {pid}) to {ceiling / MB} MB (was using {wsNow / MB} MB).");
 
                     _limited[pid] = new Limited
                     {
@@ -178,13 +218,16 @@ internal sealed class Engine : IDisposable
         try { using var p = Process.GetProcessById((int)pid); name = p.ProcessName; }
         catch { return false; }
 
-        if (Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase)) return true;
+        if (name != _lastFg) { _lastFg = name; Logger.Write($"Foreground app: {name}"); }
+
+        if (Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase)) { GameName = name; return true; }
         if (!Config.AutoDetectFullscreen) return false;
         if (Protected.Contains(name)) return false;
         if (Config.FullscreenIgnore.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
         if (Config.Targets.Any(t => string.Equals(t.Exe, name, StringComparison.OrdinalIgnoreCase))) return false;
 
-        return IsFullscreen(hwnd);
+        if (IsFullscreen(hwnd)) { GameName = name + " (fullscreen)"; return true; }
+        return false;
     }
 
     static bool IsFullscreen(IntPtr hwnd)

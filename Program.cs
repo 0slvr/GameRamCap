@@ -28,6 +28,7 @@ sealed class TrayContext : ApplicationContext
     public TrayContext()
     {
         LoadConfig();
+        Logger.Write($"Started. Games=[{string.Join(", ", _engine.Config.Games)}] AutoDetectFullscreen={_engine.Config.AutoDetectFullscreen} Delay={_engine.Config.DelaySeconds}s");
         _engine.ClearStaleCeilings();
 
         _statusItem = new ToolStripMenuItem("Idle") { Enabled = false };
@@ -41,6 +42,7 @@ sealed class TrayContext : ApplicationContext
         menu.Items.Add("Open config file", null, (_, _) =>
             Process.Start(new ProcessStartInfo(ConfigStore.FilePath) { UseShellExecute = true }));
         menu.Items.Add("Reload config", null, (_, _) => LoadConfig());
+        menu.Items.Add("Open log file", null, (_, _) => Logger.Open());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
 
@@ -50,6 +52,11 @@ sealed class TrayContext : ApplicationContext
             Text = "GameRamCap",
             ContextMenuStrip = menu,
             Visible = true,
+        };
+
+        _engine.Notify += (title, text) =>
+        {
+            try { _tray.ShowBalloonTip(4000, title, text, ToolTipIcon.Info); } catch { }
         };
 
         _timer = new Timer { Interval = 1000 };
