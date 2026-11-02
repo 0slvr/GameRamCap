@@ -83,8 +83,8 @@ All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ult
 | Level | Interval | Ceiling / process | Meaning |
 |---|---|---|---|
 | Ultra Performance | 1 s | 8 MB | lowest possible |
-| Performance | 2 s | 12 MB | very low |
-| Balanced | 3 s | 16 MB | low, still tuned by auto-squeeze |
+| Performance | 2 s | 20 MB | very low |
+| Balanced | 3 s | 30 MB | low, still tuned by auto-squeeze |
 | Safe | 4 s | 40 MB | more room |
 | Ultra Safe | 5 s | 90 MB | most room |
 
