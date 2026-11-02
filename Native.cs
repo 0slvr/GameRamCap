@@ -24,6 +24,68 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool SetProcessWorkingSetSizeEx(IntPtr process, nuint min, nuint max, uint flags);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool K32EmptyWorkingSet(IntPtr process);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct PROCESS_MEMORY_COUNTERS
+    {
+        public uint cb, PageFaultCount;
+        public nuint PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+                     QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool K32GetProcessMemoryInfo(IntPtr process, ref PROCESS_MEMORY_COUNTERS counters, uint size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MEMORYSTATUSEX
+    {
+        public uint dwLength, dwMemoryLoad;
+        public ulong ullTotalPhys, ullAvailPhys, ullTotalPageFile, ullAvailPageFile,
+                     ullTotalVirtual, ullAvailVirtual, ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX status);
+
+    const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    /// <summary>Percent of physical RAM that is available (free + standby cache). -1 on failure.</summary>
+    public static double FreeRamPercent()
+    {
+        var s = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        if (!GlobalMemoryStatusEx(ref s) || s.ullTotalPhys == 0) return -1;
+        return 100.0 * s.ullAvailPhys / s.ullTotalPhys;
+    }
+
+    /// <summary>Current working set and cumulative page-fault count of a process.</summary>
+    public static bool GetMemory(int pid, out long workingSet, out long pageFaults)
+    {
+        workingSet = pageFaults = 0;
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try
+        {
+            var c = new PROCESS_MEMORY_COUNTERS { cb = (uint)Marshal.SizeOf<PROCESS_MEMORY_COUNTERS>() };
+            if (!K32GetProcessMemoryInfo(h, ref c, c.cb)) return false;
+            workingSet = (long)c.WorkingSetSize;
+            pageFaults = c.PageFaultCount;
+            return true;
+        }
+        finally { CloseHandle(h); }
+    }
+
+    /// <summary>Soft trim: moves the process' pages to the standby list. No cap is set, the process
+    /// can take any page back at once (a cheap soft fault, no disk) if it needs it.</summary>
+    public static bool Trim(int pid)
+    {
+        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try { return K32EmptyWorkingSet(h); }
+        finally { CloseHandle(h); }
+    }
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
 

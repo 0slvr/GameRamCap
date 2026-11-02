@@ -209,7 +209,7 @@ internal sealed class TargetsForm : Form
             bool adaptive = r.Cells["Adaptive"].Value is true;
             var old = _cfg.Targets.FirstOrDefault(x => string.Equals(x.Exe, exe, StringComparison.OrdinalIgnoreCase));
             list.Add(new Target { Exe = exe, CeilingMB = ceil, MinCeilingMB = min, MaxCeilingMB = max, Adaptive = adaptive,
-                                  FocusAlso = old?.FocusAlso ?? new() });
+                                  FocusAlso = old?.FocusAlso ?? new(), BudgetMB = old?.BudgetMB ?? 0 });
         }
         _cfg.Targets = list;
         _cfg.FocusMode = _focus.Checked;

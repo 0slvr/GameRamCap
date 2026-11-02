@@ -1,0 +1,155 @@
+using System.Diagnostics;
+
+namespace GameRamCap;
+
+// Smart mode. No hard caps at all, so an app can never be starved or crash because of us:
+//  * Nothing happens while Windows has enough free RAM.
+//  * Under pressure, background apps are soft-trimmed (EmptyWorkingSet): pages go to the standby list and
+//    the app takes back what it really needs instantly, without disk access.
+//  * The budget is per APP (all its processes together), not per process.
+//  * The app in focus (and one you just left) is never touched; busy processes are skipped.
+//  * Feedback loop: if an app immediately pulls its pages back, its budget grows and the cooldown doubles.
+//    If it stays quiet, the budget slowly returns to the configured value.
+internal sealed partial class Engine
+{
+    sealed class Group
+    {
+        public long Budget, BaseBudget;
+        public int Backoff;
+        public DateTime LastTrim = DateTime.MinValue;
+        public DateTime LastFocused = DateTime.MinValue;
+        public bool Pending;
+        public long BeforeWs, AfterWs, PfBase;
+    }
+
+    sealed class Proc { public int Pid; public long Ws; public double Cpu; public bool Known; }
+
+    readonly Dictionary<string, Group> _groups = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<int, (TimeSpan Cpu, DateTime At)> _cpuPrev = new();
+    DateTime _lastSmart = DateTime.MinValue;
+    string _smartInfo = "Smart: starting";
+    const long PageSize = 4096;
+
+    void ApplySmart()
+    {
+        var now = DateTime.UtcNow;
+        if (!ReferenceEquals(_cfgSeen, Config))
+        {
+            _cfgSeen = Config;
+            _synth.Clear(); _groups.Clear(); _cpuPrev.Clear(); _failLogged.Clear();
+            _lastSmart = DateTime.MinValue;
+        }
+        if ((now - _lastSmart).TotalSeconds < Math.Max(0.5, Config.SmartScanSeconds)) return;
+        _lastSmart = now;
+
+        double freePct = Native.FreeRamPercent();
+        int level = freePct < 0 ? 0
+                  : freePct < Config.CriticalFreePercent ? 2
+                  : freePct < Config.PressureFreePercent ? 1 : 0;
+        _smartInfo = level == 0 ? $"Smart: RAM free {freePct:0}% - nothing touched"
+                   : level == 1 ? $"Smart: RAM free {freePct:0}% - trimming idle background apps"
+                   :              $"Smart: RAM low ({freePct:0}%) - trimming harder";
+
+        // 1) Collect processes, grouped by app name.
+        var byName = new Dictionary<string, List<Proc>>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<int>();
+        foreach (var p in Safe(() => Process.GetProcesses()))
+        {
+            try
+            {
+                int pid = p.Id;
+                if (pid <= 4) continue;
+                string name = p.ProcessName;
+                if (Protected.Contains(name) || IsException(name)) continue;
+                if (Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase)) continue; // never trim your games
+                if (!Config.LimitEverything &&
+                    !Config.Targets.Any(t => string.Equals(t.Exe, name, StringComparison.OrdinalIgnoreCase))) continue;
+
+                seen.Add(pid);
+                if (_failLogged.Contains(pid)) continue;
+
+                long ws = Safe(() => p.WorkingSet64, 0L);
+                var cpu = Safe(() => p.TotalProcessorTime, TimeSpan.Zero);
+                double busy = 0; bool known = false;
+                if (_cpuPrev.TryGetValue(pid, out var prev) && cpu >= prev.Cpu)
+                {
+                    double secs = (now - prev.At).TotalSeconds;
+                    if (secs > 0.2) { busy = (cpu - prev.Cpu).TotalSeconds / secs; known = true; }
+                }
+                _cpuPrev[pid] = (cpu, now);
+
+                if (!byName.TryGetValue(name, out var list)) byName[name] = list = new List<Proc>();
+                list.Add(new Proc { Pid = pid, Ws = ws, Cpu = busy, Known = known });
+            }
+            finally { p.Dispose(); }
+        }
+        foreach (var pid in _cpuPrev.Keys.Where(k => !seen.Contains(k)).ToList()) _cpuPrev.Remove(pid);
+
+        // 2) Decide per app.
+        foreach (var (name, procs) in byName)
+        {
+            var t = ResolveTarget(name);
+            if (!_groups.TryGetValue(name, out var g))
+            {
+                long b = (t.BudgetMB > 0 ? t.BudgetMB : Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB;
+                g = _groups[name] = new Group { Budget = b, BaseBudget = b };
+            }
+
+            if (_exempt.Contains(name)) { g.LastFocused = now; g.Pending = false; continue; }
+
+            long total = procs.Sum(x => x.Ws);
+
+            // Feedback on the last trim: did the app fight back?
+            if (g.Pending && (now - g.LastTrim).TotalSeconds >= 8)
+            {
+                g.Pending = false;
+                long pf = 0;
+                foreach (var x in procs) if (Native.GetMemory(x.Pid, out _, out var f)) pf += f;
+                double refaulted = Math.Max(0, pf - g.PfBase) * (double)PageSize;
+                long freed = Math.Max(1, g.BeforeWs - g.AfterWs);
+                bool fighting = refaulted > freed * 0.5 || total > g.BeforeWs * 0.9;
+                if (fighting)
+                {
+                    g.Backoff = Math.Min(g.Backoff + 1, 5);
+                    g.Budget = Math.Min(g.Budget + g.Budget / 4 + 32 * MB, g.BaseBudget * 4);
+                    Logger.Write($"{name} took its pages back - budget raised to {g.Budget / MB} MB, next trim later.");
+                }
+                else
+                {
+                    if (g.Backoff > 0) g.Backoff--;
+                    g.Budget = Math.Max(g.BaseBudget, g.Budget - g.Budget / 10);
+                }
+            }
+
+            if (level == 0) continue;
+            if ((now - g.LastFocused).TotalSeconds < Config.GraceAfterFocusSeconds) continue;
+            double cooldown = Math.Min(600, Config.TrimCooldownSeconds * Math.Pow(2, g.Backoff));
+            if ((now - g.LastTrim).TotalSeconds < cooldown) continue;
+
+            long target = level == 2 ? Math.Max(t.MinCeilingMB * MB, g.Budget / 2) : g.Budget;
+            if (total <= target) continue;
+
+            // Trim the biggest idle processes first, only as many as needed to reach the budget.
+            double busyLimit = level == 2 ? 0.5 : 0.15;
+            long projected = total; int trimmed = 0;
+            foreach (var v in procs.Where(x => x.Known && x.Ws >= 40 * MB && x.Cpu < busyLimit).OrderByDescending(x => x.Ws))
+            {
+                if (projected <= target) break;
+                if (!Native.Trim(v.Pid)) { _failLogged.Add(v.Pid); continue; }
+                trimmed++;
+                projected -= (long)(v.Ws * 0.85);
+            }
+            if (trimmed == 0) continue;
+
+            long after = 0, pfBase = 0;
+            foreach (var x in procs)
+                if (Native.GetMemory(x.Pid, out var w, out var f)) { after += w; pfBase += f; }
+                else after += x.Ws;
+
+            g.LastTrim = now; g.Pending = true;
+            g.BeforeWs = total; g.AfterWs = after; g.PfBase = pfBase;
+            if (total - after >= 50 * MB)
+                Logger.Write($"Trimmed {name}: {total / MB} -> {after / MB} MB across {procs.Count} process(es) (free RAM {freePct:0}%).");
+        }
+    }
+}

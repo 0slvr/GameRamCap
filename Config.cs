@@ -13,11 +13,29 @@ internal sealed class Target
     public bool Adaptive { get; set; } = true;
     /// <summary>Extra process names that count as "this app is focused" (e.g. steamwebhelper -> steam).</summary>
     public List<string> FocusAlso { get; set; } = new();
+    /// <summary>Smart mode: total RAM (all processes of this app together) it may keep while in the background.
+    /// 0 = use MaxCeilingMB.</summary>
+    public int BudgetMB { get; set; } = 0;
 }
 
 internal sealed class Config
 {
     public bool Enabled { get; set; } = true;
+    /// <summary>"Smart" (default): no hard caps. Background apps are trimmed gently, only when Windows is short on RAM,
+    /// per app (all its processes together), and the budget adapts if the app fights back.
+    /// "Hard": the old fixed per-process hard ceilings.</summary>
+    public string Mode { get; set; } = "Smart";
+    /// <summary>Smart mode: start trimming when available RAM drops below this percent.</summary>
+    public int PressureFreePercent { get; set; } = 25;
+    /// <summary>Smart mode: below this percent trimming gets stronger (budget halved).</summary>
+    public int CriticalFreePercent { get; set; } = 10;
+    /// <summary>Smart mode: how often the RAM state is checked.</summary>
+    public double SmartScanSeconds { get; set; } = 2;
+    /// <summary>Smart mode: minimum seconds between two trims of the same app (doubles when the app fights back).</summary>
+    public double TrimCooldownSeconds { get; set; } = 15;
+    /// <summary>Smart mode: an app you just left is not touched for this many seconds (quick Alt+Tab back is instant).</summary>
+    public double GraceAfterFocusSeconds { get; set; } = 20;
+    public bool IsSmart() => string.Equals(Mode, "Smart", StringComparison.OrdinalIgnoreCase);
     /// <summary>Focus mode: a target app is unlimited while it is the foreground app and limited again
     /// as soon as you click anywhere else. Works for every app in Targets, no game needed.</summary>
     public bool FocusMode { get; set; } = true;

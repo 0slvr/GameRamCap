@@ -4,6 +4,19 @@ Tray app for Windows 10/11. While a game is in the foreground, it puts a **hard 
 
 It does not clean memory periodically. It uses the documented `SetProcessWorkingSetSizeEx` API with the hard-max flag, per process.
 
+## Modes
+
+**Smart (default)** - no hard caps, so nothing can be starved or crash:
+
+- Does nothing while Windows has enough free RAM (`PressureFreePercent`, default 25%).
+- Under pressure, trims background apps softly (pages move to the standby list; the app takes them back instantly if needed, no disk).
+- The budget is per **app** (all its processes together). It is `BudgetMB`, or `MaxCeilingMB` when 0.
+- Never touches the focused app, an app you left in the last `GraceAfterFocusSeconds`, busy processes, or `Games`.
+- Learns: if an app pulls its pages back right away, its budget grows and the cooldown doubles; when it stays quiet, the budget returns to normal.
+- Below `CriticalFreePercent` (10%) trimming is stronger (budget halved, down to `MinCeilingMB`).
+
+**Hard** - the old behaviour: fixed hard per-process ceilings. Set `"Mode": "Hard"`.
+
 ## Build
 
 Requires the .NET 8 SDK.

@@ -75,6 +75,13 @@ internal sealed partial class Engine
         _exempt.Clear();
         foreach (var k in _exemptUntil.Keys) _exempt.Add(k);
 
+        if (Config.IsSmart())
+        {
+            ApplySmart();
+            Status = _smartInfo + (fg.Length > 0 ? $" - {fg} in focus (free)" : "");
+            return;
+        }
+
         if (Config.LimitEverything) ApplyEverything();
         else ApplyAndAdapt();
 

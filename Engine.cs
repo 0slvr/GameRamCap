@@ -40,7 +40,7 @@ internal sealed partial class Engine : IDisposable
 
     public void Tick()
     {
-        if (Config.FocusMode) { TickFocus(); return; }
+        if (Config.FocusMode || Config.IsSmart()) { TickFocus(); return; }
         bool gaming = Enabled && Config.Enabled && IsGaming();
         var now = DateTime.UtcNow;
 

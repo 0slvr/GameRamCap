@@ -1,5 +1,11 @@
 {
   "Enabled": true,
+  "Mode": "Smart",
+  "PressureFreePercent": 25,
+  "CriticalFreePercent": 10,
+  "SmartScanSeconds": 2,
+  "TrimCooldownSeconds": 15,
+  "GraceAfterFocusSeconds": 20,
   "FocusMode": true,
   "LimitEverything": true,
   "RelimitDelaySeconds": 1.5,
