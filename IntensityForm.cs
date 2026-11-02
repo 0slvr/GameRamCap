@@ -15,7 +15,7 @@ internal sealed class IntensityForm : Form
     static readonly (string Name, string Header, string Tip)[] Cols =
     {
         ("Scan",        "Check every (s)",     "How often the RAM state is checked."),
-        ("HoldMB",      "Ceiling per app (MB)","Hard RAM ceiling for a whole background app, all its processes together."),
+        ("HoldMB",      "Ceiling per process (MB)","Hard RAM ceiling per process of a background app (app total = this x its process count). Never below HoldMinProcessMB / HoldKeepPercent."),
         ("Cooldown",    "Cooldown (s)",        "Minimum seconds between two trims of the same app."),
         ("Grace",       "Grace (s)",           "An app you just left stays untouched for this long."),
         ("BudgetScale", "Budget scale",        "Multiplies each app's budget (lower = squeeze more)."),

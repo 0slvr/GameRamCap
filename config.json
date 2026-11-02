@@ -66,5 +66,7 @@
       "Adaptive": true,
       "FocusAlso": []
     }
-  ]
+  ],
+  "HoldMinProcessMB": 64,
+  "HoldKeepPercent": 60
 }

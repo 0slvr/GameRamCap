@@ -43,22 +43,32 @@ internal sealed partial class Engine
         _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling };
     }
 
-    /// <summary>Caps a whole app. With a preset HoldMB the limit is for the app as a whole: it is shared between
-    /// its processes in proportion to what each one uses naturally (8 MB minimum each). A process that appears
-    /// later gets an even share. Without HoldMB (Custom) every process gets the target's own CeilingMB.</summary>
+    /// <summary>Caps the processes of one background app. With a preset HoldMB the budget is per process:
+    /// the app's total is HoldMB x its process count, shared in proportion to what each process uses.
+    /// No process is squeezed below max(HoldMinProcessMB, HoldKeepPercent % of its current size), so it keeps
+    /// enough RAM to work without constant page faults (that was the stutter). A process that appears later
+    /// gets HoldMB, with the same floor. Without HoldMB (Custom) every process gets the target's own CeilingMB.</summary>
     void HoldGroup(List<Proc> procs, Target t)
     {
         var fresh = procs.Where(x => !_limited.ContainsKey(x.Pid) && !_failLogged.Contains(x.Pid)).ToList();
         if (fresh.Count == 0) return;
-        long app = P.HoldMB * MB;
+        long perProc = (long)P.HoldMB * MB;
+        long app = perProc * procs.Count;
         bool first = !procs.Any(x => _limited.ContainsKey(x.Pid));
         long sumWs = Math.Max(1, fresh.Sum(x => x.Ws));
         long min = t.MinCeilingMB * MB, max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
+        long floorAbs = Math.Max(8, Config.HoldMinProcessMB) * MB;
+        double keep = Math.Clamp(Config.HoldKeepPercent, 0, 100) / 100.0;
         foreach (var x in fresh)
         {
-            long cap = app <= 0 ? Math.Clamp(t.CeilingMB * MB, min, max)
-                     : first ? Math.Max(8 * MB, app * x.Ws / sumWs)
-                     : Math.Max(8 * MB, app / procs.Count);
+            long cap;
+            if (perProc <= 0) cap = Math.Clamp(t.CeilingMB * MB, min, max);
+            else
+            {
+                long share = first ? app * x.Ws / sumWs : perProc;
+                long floor = Math.Max(floorAbs, (long)(x.Ws * keep));
+                cap = Math.Max(share, floor);
+            }
             HoldProcess(x.Pid, cap);
         }
     }

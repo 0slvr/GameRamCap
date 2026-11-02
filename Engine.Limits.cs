@@ -33,6 +33,24 @@ internal sealed partial class Engine
         }
     }
 
+    /// <summary>Lifts every hard working-set cap on every process (used by the watchdog after an End Task,
+    /// and safe to call any time: it only touches processes that really have a hard cap).</summary>
+    public static int ReleaseAllHardCeilings()
+    {
+        int n = 0, self = Environment.ProcessId;
+        foreach (var p in Safe(() => Process.GetProcesses()))
+        {
+            try
+            {
+                if (p.Id <= 4 || p.Id == self) continue;
+                if (Native.HasHardCeiling(p.Id, out var min, out var max) && Native.Release(p.Id, min, max)) n++;
+            }
+            catch { }
+            finally { p.Dispose(); }
+        }
+        return n;
+    }
+
     /// <summary>Everything mode: also clears leftover hard caps on any non-target process.</summary>
     public void ClearStaleCeilingsEverything()
     {

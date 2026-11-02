@@ -6,13 +6,38 @@ namespace GameRamCap;
 static class Program
 {
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        // Watchdog mode: a tiny hidden copy that waits for the main app to die (End Task cannot be caught
+        // by the app itself) and then lifts every hard RAM ceiling that was left on other processes.
+        if (args.Length >= 2 && args[0] == "--watchdog" && int.TryParse(args[1], out int parentPid))
+        {
+            try { using var parent = Process.GetProcessById(parentPid); parent.WaitForExit(); } catch { }
+            try { int n = Engine.ReleaseAllHardCeilings(); Logger.Write($"Watchdog: main app ended, released {n} ceiling(s)."); } catch { }
+            return;
+        }
+
         using var mutex = new Mutex(true, "GameRamCap.SingleInstance", out bool first);
         if (!first) return;
 
+        StartWatchdog();
         ApplicationConfiguration.Initialize();
         Application.Run(new TrayContext());
+    }
+
+    /// <summary>Starts the watchdog detached (through cmd "start") so that End Task / End process tree
+    /// on this app does not kill it too.</summary>
+    static void StartWatchdog()
+    {
+        try
+        {
+            string? exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe)) return;
+            Process.Start(new ProcessStartInfo("cmd.exe",
+                $"/c start \"\" \"{exe}\" --watchdog {Environment.ProcessId}")
+            { CreateNoWindow = true, UseShellExecute = false, WindowStyle = ProcessWindowStyle.Hidden });
+        }
+        catch (Exception ex) { Logger.Write("Could not start watchdog: " + ex.Message); }
     }
 }
 

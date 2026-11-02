@@ -63,7 +63,7 @@ Requires the .NET 8 SDK.
 
 - System processes, security services and common anti-cheat services are never touched (hard-coded list in `Engine.cs`).
 - Do not list your game as a target.
-- Limits live in the target process, so closing GameRamCap or alt-tabbing out restores them; a crashed run is cleaned up at the next start.
+- Hard limits live in the target process. Exit from the tray restores them. **End Task** cannot be caught by the app, so a hidden watchdog copy (`GameRamCap.exe --watchdog <pid>`, started detached) waits for the main app to die and then lifts every leftover ceiling. A crashed run is also cleaned up at the next start.
 - Too low a ceiling makes apps page heavily (Discord voice can crackle). Keep `Adaptive` on and start with the defaults.
 - Some elevated processes can only be limited if GameRamCap runs as Administrator.
 
@@ -78,9 +78,9 @@ Without a token, git's normal sign-in (Git Credential Manager) is used instead.
 
 ## Intensity levels (Smart mode + `HoldBackground`)
 
-All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is for the **whole app** (all its processes together, split by what each uses):
+All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is **per process** (the app total is this x its number of processes, split by what each process uses). No process is squeezed below `HoldMinProcessMB` (64) or `HoldKeepPercent` (60%) of its current size, so apps do not stutter:
 
-| Level | Interval | Ceiling / app |
+| Level | Interval | Ceiling / process |
 |---|---|---|
 | Ultra Performance | 1 s | 20 MB |
 | Performance | 2 s | 40 MB |
