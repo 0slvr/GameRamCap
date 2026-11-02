@@ -1,4 +1,4 @@
-<#
+﻿<#
     upload-github.ps1 - one-click "commit + push" to GitHub for Visual Studio.
     Run it from the "Upload to GitHub" launch profile (pick it in the Start dropdown, then Ctrl+F5).
 
@@ -6,9 +6,12 @@
       1. Checks git is installed and the repo is in a sane state (no merge/rebase in progress).
       2. First run: creates the local repo and, if you want, the GitHub repo (needs GH_TOKEN) or uses a URL you paste.
       3. Shows how many files changed, asks for a commit message, commits and pushes.
-      4. Shows the result in a message box.
+      4. After a successful push: builds the exe (dotnet publish) and creates a new GitHub Release
+         (auto version v0.1.1, v0.1.2, ...) with the exe files attached.
+      5. Shows the result in a message box.
 
-    Token (optional but recommended):  setx GH_TOKEN "ghp_xxx"   then restart Visual Studio.
+    The Release step needs a token (GH_TOKEN, or being logged in with the GitHub CLI: gh auth login).
+    Token (optional for push, REQUIRED for Release):  setx GH_TOKEN "ghp_xxx"   then restart Visual Studio.
     The token needs "Contents: Read and write" (and "Administration: write" only if you let it create the repo).
     The token is only sent as an HTTP header for this one command; it is never saved in .git/config.
 #>
@@ -139,12 +142,84 @@ $log += & git @auth push -u origin $branch 2>&1
 $code = $LASTEXITCODE
 $tail = ($log | ForEach-Object { "$_" } | Where-Object { $_.Trim() } | Select-Object -Last 10) -join "`n"
 
-if ($code -eq 0) {
-    Box "Uploaded to GitHub!`n`n$remote`nBranch: $branch" "Upload to GitHub - done" "OK" "Information" | Out-Null
-}
-else {
+# ---- push result ----
+if ($code -ne 0) {
     $hint = ""
     if ($tail -match "non-fast-forward|rejected|fetch first") { $hint = "`n`nThe remote has commits you don't have. Run 'git pull --rebase' once, then try again." }
     Box "Upload FAILED (exit code $code).`n`n$tail$hint" "Upload to GitHub - FAILED" "OK" "Error" | Out-Null
+    exit $code
 }
-exit $code
+
+# ---- release: build exe + create GitHub Release (runs after every successful upload) ----
+$BuildStandalone = $true     # also attach the big self-contained exe (runs without .NET installed)
+$relMsg = ""
+$relOk = $true
+try {
+    $ProgressPreference = 'SilentlyContinue'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    if ($remote -notmatch 'github\.com[:/]([^/]+)/([^/]+?)(\.git)?$') { throw "Could not read owner/repo from the remote URL." }
+    $owner = $Matches[1]; $repo = $Matches[2]
+
+    $token = $env:GH_TOKEN
+    if (-not $token -and (Get-Command gh -ErrorAction SilentlyContinue)) { $token = (& gh auth token 2>$null | Select-Object -First 1) }
+    if (-not $token) { throw "No token. Set GH_TOKEN (setx GH_TOKEN `"ghp_xxx`") and restart Visual Studio, or run 'gh auth login'." }
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { throw "dotnet SDK not found in PATH." }
+
+    $h = @{ Authorization = "Bearer $token"; Accept = "application/vnd.github+json"; "User-Agent" = "upload-github" }
+
+    # next version = latest release + 1 (patch); first release starts from the csproj <Version>
+    $ver = "0.1.0"
+    $csproj = Get-ChildItem $root -Filter *.csproj | Select-Object -First 1
+    if ($csproj -and ((Get-Content $csproj.FullName -Raw) -match '<Version>(\d+\.\d+\.\d+)</Version>')) { $ver = $Matches[1] }
+    try {
+        $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/latest" -Headers $h
+        if ($latest.tag_name -match '^v(\d+)\.(\d+)\.(\d+)') { $ver = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)" }
+    } catch { }   # 404 = no release yet -> keep $ver
+
+    # build
+    $out = Join-Path $env:TEMP "GameRamCap-release"
+    if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+    $proj = $csproj.FullName
+    $files = @()
+
+    $b = & dotnet publish $proj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true "-p:Version=$ver" -o (Join-Path $out "small") --nologo -v q 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ("Build failed:`n" + (($b | ForEach-Object { "$_" } | Select-Object -Last 8) -join "`n")) }
+    $f1 = Join-Path $out "GameRamCap-v$ver.exe"
+    Copy-Item (Join-Path $out "small\GameRamCap.exe") $f1
+    $files += $f1
+
+    if ($BuildStandalone) {
+        $b = & dotnet publish $proj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true "-p:Version=$ver" -o (Join-Path $out "full") --nologo -v q 2>&1
+        if ($LASTEXITCODE -ne 0) { throw ("Standalone build failed:`n" + (($b | ForEach-Object { "$_" } | Select-Object -Last 8) -join "`n")) }
+        $f2 = Join-Path $out "GameRamCap-v$ver-standalone.exe"
+        Copy-Item (Join-Path $out "full\GameRamCap.exe") $f2
+        $files += $f2
+    }
+
+    # create release on the commit we just pushed
+    $sha = (& git rev-parse HEAD 2>$null | Select-Object -First 1)
+    $body = @{ tag_name = "v$ver"; target_commitish = $sha; name = "GameRamCap v$ver"; body = $Message; generate_release_notes = $false; draft = $false } | ConvertTo-Json
+    $rel = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$owner/$repo/releases" -Headers $h -Body $body -ContentType "application/json; charset=utf-8"
+
+    # upload the exe files
+    $uploadBase = ($rel.upload_url -replace '\{.*$', '')
+    foreach ($f in $files) {
+        $name = [IO.Path]::GetFileName($f)
+        Invoke-RestMethod -Method Post -Uri "${uploadBase}?name=$name" -Headers $h -InFile $f -ContentType "application/octet-stream" | Out-Null
+    }
+    $relMsg = "Release v$ver published:`n$($rel.html_url)"
+}
+catch {
+    $relOk = $false
+    $relMsg = "Code was pushed, but the Release step FAILED:`n`n$($_.Exception.Message)"
+}
+
+if ($relOk) {
+    Box "Uploaded to GitHub!`n`n$remote`nBranch: $branch`n`n$relMsg" "Upload to GitHub - done" "OK" "Information" | Out-Null
+}
+else {
+    Box "Uploaded to GitHub (code only).`n`n$relMsg" "Upload to GitHub - release failed" "OK" "Warning" | Out-Null
+    exit 1
+}
+exit 0
