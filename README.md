@@ -78,7 +78,7 @@ Without a token, git's normal sign-in (Git Credential Manager) is used instead.
 
 ## Intensity levels (Smart mode + `HoldBackground`)
 
-All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is **per process** (the app total is this x its number of processes, split by what each process uses). No process is squeezed below `HoldMinProcessMB` (64) or `HoldKeepPercent` (60%) of its current size, so apps do not stutter:
+All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is **per process** (the app total is this x its number of processes, split by what each process uses). No process is squeezed below `HoldMinProcessMB` (64) or `HoldKeepPercent` (60%) of its current size, so apps do not stutter. The floor depends on the level (Ultra Performance 16 MB / 25% ... Ultra Safe 96 MB / 80%; Custom uses config.json). Held processes also **adapt**: one that sits at its ceiling and keeps page-faulting gets +25% (up to `MaxCeilingMB`), and slides back after 30 quiet seconds:
 
 | Level | Interval | Ceiling / process |
 |---|---|---|

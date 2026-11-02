@@ -13,6 +13,9 @@ internal sealed partial class Engine
         public DateTime LastSample = DateTime.UtcNow;
         public DateTime LastAdjust = DateTime.MinValue;
         public double HighSecs, LowSecs;
+        public long BaseCeiling, LastPf;      // Smart hold: starting ceiling, last page-fault count
+        public DateTime LastPfAt = DateTime.MinValue;
+        public double QuietSecs;
     }
 
 

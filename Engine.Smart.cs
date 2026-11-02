@@ -40,7 +40,7 @@ internal sealed partial class Engine
         try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return; }
         if (!Native.TryGetLimits(pid, out var omin, out var omax)) { _failLogged.Add(pid); return; }
         if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); return; }
-        _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling };
+        _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling, BaseCeiling = ceiling };
     }
 
     /// <summary>Caps the processes of one background app. With a preset HoldMB the budget is per process:
@@ -52,13 +52,14 @@ internal sealed partial class Engine
     {
         var fresh = procs.Where(x => !_limited.ContainsKey(x.Pid) && !_failLogged.Contains(x.Pid)).ToList();
         if (fresh.Count == 0) return;
-        long perProc = (long)P.HoldMB * MB;
+        var pr0 = P;
+        long perProc = (long)pr0.HoldMB * MB;
         long app = perProc * procs.Count;
         bool first = !procs.Any(x => _limited.ContainsKey(x.Pid));
         long sumWs = Math.Max(1, fresh.Sum(x => x.Ws));
         long min = t.MinCeilingMB * MB, max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
-        long floorAbs = Math.Max(8, Config.HoldMinProcessMB) * MB;
-        double keep = Math.Clamp(Config.HoldKeepPercent, 0, 100) / 100.0;
+        long floorAbs = Math.Max(8, pr0.HoldFloorMB > 0 ? pr0.HoldFloorMB : Config.HoldMinProcessMB) * MB;
+        double keep = Math.Clamp(pr0.HoldKeepPct > 0 ? pr0.HoldKeepPct : Config.HoldKeepPercent, 0, 100) / 100.0;
         foreach (var x in fresh)
         {
             long cap;
@@ -70,6 +71,44 @@ internal sealed partial class Engine
                 cap = Math.Max(share, floor);
             }
             HoldProcess(x.Pid, cap);
+        }
+    }
+
+    /// <summary>Starts tight, grows only when needed: a held process that sits at its ceiling and keeps
+    /// page-faulting gets +25% (up to the target's MaxCeilingMB); after 30 quiet seconds it slides back
+    /// toward its starting ceiling. This keeps RAM low without stutter.</summary>
+    void TuneHeld(List<Proc> procs, Target t)
+    {
+        var now = DateTime.UtcNow;
+        long max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
+        foreach (var x in procs)
+        {
+            if (!_limited.TryGetValue(x.Pid, out var st)) continue;
+            if (!Native.GetMemory(x.Pid, out var ws, out var pf)) continue;
+            if (st.LastPfAt == DateTime.MinValue) { st.LastPf = pf; st.LastPfAt = now; continue; }
+            double dt = (now - st.LastPfAt).TotalSeconds;
+            if (dt < 1.0) continue;
+            double rate = Math.Max(0, pf - st.LastPf) / dt;
+            st.LastPf = pf; st.LastPfAt = now;
+
+            long next = st.Ceiling;
+            if (ws >= st.Ceiling * 0.9 && rate > 200)
+            {
+                st.QuietSecs = 0;
+                next = Math.Min(max, st.Ceiling + Math.Max(16 * MB, st.Ceiling / 4));
+            }
+            else if (rate < 30)
+            {
+                st.QuietSecs += dt;
+                if (st.QuietSecs >= 30 && st.Ceiling > st.BaseCeiling)
+                {
+                    st.QuietSecs = 0;
+                    next = Math.Max(st.BaseCeiling, st.Ceiling - st.Ceiling / 10);
+                }
+            }
+            else st.QuietSecs = 0;
+
+            if (next != st.Ceiling && Native.SetCeiling(x.Pid, next)) st.Ceiling = next;
         }
     }
 
@@ -166,7 +205,10 @@ internal sealed partial class Engine
 
             // Keep a background app that was already trimmed from growing back (also new child processes).
             if (g.Holding && Config.HoldBackground)
+            {
                 HoldGroup(procs, t);
+                TuneHeld(procs, t);
+            }
 
             // Feedback on the last trim: did the app fight back?
             if (g.Pending && (now - g.LastTrim).TotalSeconds >= 8)
