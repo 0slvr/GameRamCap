@@ -96,6 +96,7 @@ if ($remote -match '^(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)' -or $remote -notmat
 }
 
 # ---- what would be uploaded? ----
+$releaseOnly = $false
 $changes = @(& git status --porcelain 2>$null)
 $ahead = 0
 $upstream = (& git rev-parse --abbrev-ref "@{u}" 2>$null | Select-Object -First 1)
@@ -105,8 +106,11 @@ $hasCommits = $true
 if ($LASTEXITCODE -ne 0) { $hasCommits = $false }
 
 if ($changes.Count -eq 0 -and $ahead -eq 0 -and $hasCommits -and $upstream) {
-    Box "Nothing to upload. Everything is already on GitHub." "Upload to GitHub" "OK" "Information" | Out-Null
-    exit 0
+    $a = Box "Nothing to upload. Everything is already on GitHub.`n`nCreate a new Release from the latest commit anyway?" "Upload to GitHub" "YesNo" "Question"
+    if ($a -ne "Yes") { exit 0 }
+    $releaseOnly = $true
+    $Message = (& git log -1 --pretty=%s 2>$null | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Release" }
 }
 
 # ---- warn about files that look like secrets ----
@@ -117,37 +121,39 @@ if ($risky.Count -gt 0) {
     if ($a -ne "Yes") { exit 2 }
 }
 
-# ---- confirm + commit message ----
-if ([string]::IsNullOrWhiteSpace($Message)) {
-    $default = "Update " + (Get-Date -Format "yyyy-MM-dd HH:mm")
-    $Message = (Ask "Files changed: $($changes.Count)`nRepo: $remote`n`nCommit message:" "Upload to GitHub" $default).Trim()
-}
-if ([string]::IsNullOrWhiteSpace($Message)) { exit 2 }
-
-# ---- commit ----
-$log = @()
-if ($changes.Count -gt 0) {
-    $log += & git add -A 2>&1
-    $log += & git commit -m $Message 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $tail = ($log | ForEach-Object { "$_" } | Select-Object -Last 8) -join "`n"
-        Box "Commit FAILED (is git user.name / user.email set?).`n`n$tail" "Upload to GitHub - FAILED" "OK" "Error" | Out-Null
-        exit 1
+if (-not $releaseOnly) {
+    # ---- confirm + commit message ----
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        $default = "Update " + (Get-Date -Format "yyyy-MM-dd HH:mm")
+        $Message = (Ask "Files changed: $($changes.Count)`nRepo: $remote`n`nCommit message:" "Upload to GitHub" $default).Trim()
     }
-}
+    if ([string]::IsNullOrWhiteSpace($Message)) { exit 2 }
 
-# ---- push (never force) ----
-$branch = (& git symbolic-ref --short -q HEAD 2>$null | Select-Object -First 1)
-$log += & git @auth push -u origin $branch 2>&1
-$code = $LASTEXITCODE
-$tail = ($log | ForEach-Object { "$_" } | Where-Object { $_.Trim() } | Select-Object -Last 10) -join "`n"
+    # ---- commit ----
+    $log = @()
+    if ($changes.Count -gt 0) {
+        $log += & git add -A 2>&1
+        $log += & git commit -m $Message 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $tail = ($log | ForEach-Object { "$_" } | Select-Object -Last 8) -join "`n"
+            Box "Commit FAILED (is git user.name / user.email set?).`n`n$tail" "Upload to GitHub - FAILED" "OK" "Error" | Out-Null
+            exit 1
+        }
+    }
 
-# ---- push result ----
-if ($code -ne 0) {
-    $hint = ""
-    if ($tail -match "non-fast-forward|rejected|fetch first") { $hint = "`n`nThe remote has commits you don't have. Run 'git pull --rebase' once, then try again." }
-    Box "Upload FAILED (exit code $code).`n`n$tail$hint" "Upload to GitHub - FAILED" "OK" "Error" | Out-Null
-    exit $code
+    # ---- push (never force) ----
+    $branch = (& git symbolic-ref --short -q HEAD 2>$null | Select-Object -First 1)
+    $log += & git @auth push -u origin $branch 2>&1
+    $code = $LASTEXITCODE
+    $tail = ($log | ForEach-Object { "$_" } | Where-Object { $_.Trim() } | Select-Object -Last 10) -join "`n"
+
+    # ---- push result ----
+    if ($code -ne 0) {
+        $hint = ""
+        if ($tail -match "non-fast-forward|rejected|fetch first") { $hint = "`n`nThe remote has commits you don't have. Run 'git pull --rebase' once, then try again." }
+        Box "Upload FAILED (exit code $code).`n`n$tail$hint" "Upload to GitHub - FAILED" "OK" "Error" | Out-Null
+        exit $code
+    }
 }
 
 # ---- release: build exe + create GitHub Release (runs after every successful upload) ----
