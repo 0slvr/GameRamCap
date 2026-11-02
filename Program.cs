@@ -24,6 +24,7 @@ sealed class TrayContext : ApplicationContext
     readonly ToolStripMenuItem _enabledItem;
     readonly ToolStripMenuItem _statusItem;
     DateTime _configStamp;
+    TargetsForm? _targetsForm;
 
     public TrayContext()
     {
@@ -39,6 +40,7 @@ sealed class TrayContext : ApplicationContext
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_enabledItem);
+        menu.Items.Add("Choose apps...", null, (_, _) => ShowTargets());
         menu.Items.Add("Open config file", null, (_, _) =>
             Process.Start(new ProcessStartInfo(ConfigStore.FilePath) { UseShellExecute = true }));
         menu.Items.Add("Reload config", null, (_, _) => LoadConfig());
@@ -54,6 +56,8 @@ sealed class TrayContext : ApplicationContext
             Visible = true,
         };
 
+        _tray.DoubleClick += (_, _) => ShowTargets();
+
         _engine.Notify += (title, text) =>
         {
             try { _tray.ShowBalloonTip(4000, title, text, ToolTipIcon.Info); } catch { }
@@ -64,8 +68,16 @@ sealed class TrayContext : ApplicationContext
         _timer.Start();
     }
 
+    void ShowTargets()
+    {
+        if (_targetsForm is { IsDisposed: false }) { _targetsForm.Activate(); return; }
+        _targetsForm = new TargetsForm();
+        _targetsForm.Show();
+    }
+
     void LoadConfig()
     {
+        _engine.RestoreAll(); // targets may have changed: release old limits, they are re-applied next tick
         _engine.Config = ConfigStore.Load();
         try { _configStamp = File.GetLastWriteTimeUtc(ConfigStore.FilePath); } catch { }
     }

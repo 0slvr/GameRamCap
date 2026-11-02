@@ -53,6 +53,12 @@ internal static class ConfigStore
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameRamCap");
     public static string FilePath => Path.Combine(Dir, "config.json");
 
+    public static void Save(Config cfg)
+    {
+        Directory.CreateDirectory(Dir);
+        File.WriteAllText(FilePath, JsonSerializer.Serialize(cfg, Options));
+    }
+
     public static Config Load()
     {
         try

@@ -7,7 +7,7 @@ internal sealed class Engine : IDisposable
     const long MB = 1024 * 1024;
 
     // Never touched, even if listed as a target.
-    static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
+    internal static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
     {
         "System", "Idle", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "svchost",
         "dwm", "explorer", "audiodg", "MsMpEng", "SecurityHealthService", "GameRamCap",
