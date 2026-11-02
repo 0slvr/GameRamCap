@@ -16,6 +16,8 @@ internal sealed partial class Engine
         public long BaseCeiling, LastPf;      // Smart hold: starting ceiling, last page-fault count
         public DateTime LastPfAt = DateTime.MinValue;
         public double QuietSecs;
+        public long OrigWs, Floor;            // size when first held; lowest ceiling known to be safe
+        public DateTime FloorUntil = DateTime.MinValue;
     }
 
 

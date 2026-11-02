@@ -61,6 +61,16 @@ internal sealed class Config
     public bool HoldBackground { get; set; } = true;
     /// <summary>Hold mode: no process of a held app is squeezed below this many MB (avoids page-fault stutter).</summary>
     public int HoldMinProcessMB { get; set; } = 64;
+    /// <summary>Hold mode: find the LOWEST ceiling each background process can live on without stutter.
+    /// Ceilings keep shrinking step by step while the process is quiet, and grow back (and are remembered
+    /// for a few minutes) as soon as it starts page-faulting. Works on top of the intensity level.</summary>
+    public bool AutoSqueeze { get; set; } = true;
+    /// <summary>Auto-squeeze: a process is never squeezed below this many MB.</summary>
+    public int AutoMinProcessMB { get; set; } = 16;
+    /// <summary>Auto-squeeze: page faults per second (while at its ceiling) that count as "starting to stutter".</summary>
+    public int AutoFaultRate { get; set; } = 150;
+    /// <summary>Auto-squeeze: seconds of quiet before the ceiling is lowered one more step.</summary>
+    public int AutoProbeSeconds { get; set; } = 10;
     /// <summary>Hold mode: no process is squeezed below this percent of its current size when the ceiling is set.</summary>
     public int HoldKeepPercent { get; set; } = 60;
     public bool IsSmart() => string.Equals(Mode, "Smart", StringComparison.OrdinalIgnoreCase);

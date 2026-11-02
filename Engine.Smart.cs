@@ -33,14 +33,14 @@ internal sealed partial class Engine
     Preset P => Presets.Resolve(Config);
 
     /// <summary>Hard ceiling on one background process (once per process).</summary>
-    void HoldProcess(int pid, long ceiling)
+    void HoldProcess(int pid, long ceiling, long ws = 0)
     {
         if (_limited.ContainsKey(pid) || _failLogged.Contains(pid)) return;
         DateTime start;
         try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return; }
         if (!Native.TryGetLimits(pid, out var omin, out var omax)) { _failLogged.Add(pid); return; }
         if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); return; }
-        _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling, BaseCeiling = ceiling };
+        _limited[pid] = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling, BaseCeiling = ceiling, OrigWs = Math.Max(ws, ceiling) };
     }
 
     /// <summary>Caps the processes of one background app. With a preset HoldMB the budget is per process:
@@ -70,17 +70,24 @@ internal sealed partial class Engine
                 long floor = Math.Max(floorAbs, (long)(x.Ws * keep));
                 cap = Math.Max(share, floor);
             }
-            HoldProcess(x.Pid, cap);
+            HoldProcess(x.Pid, cap, x.Ws);
         }
     }
 
-    /// <summary>Starts tight, grows only when needed: a held process that sits at its ceiling and keeps
-    /// page-faulting gets +25% (up to the target's MaxCeilingMB); after 30 quiet seconds it slides back
-    /// toward its starting ceiling. This keeps RAM low without stutter.</summary>
+    /// <summary>Finds the lowest RAM a held process can live on without stutter.
+    /// Quiet (no page faults) for AutoProbeSeconds -> lower the ceiling one step (10%, or straight to its real
+    /// use + 25% when the ceiling is not even binding). At its ceiling and page-faulting -> raise 25% and remember
+    /// that level as a floor for 5 minutes, then probe lower again. Never above what the process used before
+    /// it was held (+20%), never below AutoMinProcessMB. With AutoSqueeze off it only grows and relaxes back.</summary>
     void TuneHeld(List<Proc> procs, Target t)
     {
         var now = DateTime.UtcNow;
-        long max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
+        var c = Config;
+        bool auto = c.AutoSqueeze;
+        long absMin = Math.Max(8, c.AutoMinProcessMB) * MB;
+        double faultRate = Math.Max(10, c.AutoFaultRate);
+        double probe = Math.Max(3, c.AutoProbeSeconds);
+        long tmax = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
         foreach (var x in procs)
         {
             if (!_limited.TryGetValue(x.Pid, out var st)) continue;
@@ -91,19 +98,31 @@ internal sealed partial class Engine
             double rate = Math.Max(0, pf - st.LastPf) / dt;
             st.LastPf = pf; st.LastPfAt = now;
 
+            long hi = Math.Max(st.Ceiling, Math.Min(tmax, (long)(st.OrigWs * 1.2)));
+            bool binding = ws >= st.Ceiling * 0.9;
             long next = st.Ceiling;
-            if (ws >= st.Ceiling * 0.9 && rate > 200)
+
+            if (binding && rate > faultRate)
             {
+                // Starting to stutter: give room back and remember this level as safe for a while.
                 st.QuietSecs = 0;
-                next = Math.Min(max, st.Ceiling + Math.Max(16 * MB, st.Ceiling / 4));
+                next = Math.Min(hi, st.Ceiling + Math.Max(16 * MB, st.Ceiling / 4));
+                if (auto) { st.Floor = next; st.FloorUntil = now.AddMinutes(5); }
             }
-            else if (rate < 30)
+            else if (rate < faultRate * 0.2)
             {
                 st.QuietSecs += dt;
-                if (st.QuietSecs >= 30 && st.Ceiling > st.BaseCeiling)
+                if (st.QuietSecs >= probe)
                 {
                     st.QuietSecs = 0;
-                    next = Math.Max(st.BaseCeiling, st.Ceiling - st.Ceiling / 10);
+                    if (auto)
+                    {
+                        long lowest = Math.Max(absMin, now < st.FloorUntil ? st.Floor : 0);
+                        next = binding ? st.Ceiling - st.Ceiling / 10 : (long)(ws * 1.25);
+                        next = Math.Max(lowest, Math.Min(next, st.Ceiling));
+                    }
+                    else if (st.Ceiling > st.BaseCeiling)
+                        next = Math.Max(st.BaseCeiling, st.Ceiling - st.Ceiling / 10);
                 }
             }
             else st.QuietSecs = 0;

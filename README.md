@@ -89,3 +89,12 @@ All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ult
 | Ultra Safe | 5 s | 400 MB |
 
 `Custom` profile keeps using each target's own `CeilingMB` per process.
+
+## Auto-squeeze (default on)
+
+Goal: the lowest RAM each background process can live on **without stutter**. On top of the level's starting ceiling,
+every held process is probed: quiet for `AutoProbeSeconds` (10 s) -> ceiling lowered one step (10%, or straight to
+its real use + 25% if the ceiling is not binding), down to `AutoMinProcessMB` (16). At its ceiling and page-faulting
+more than `AutoFaultRate` (150/s) -> ceiling raised 25% and that level is kept as a floor for 5 minutes, then probed again.
+It never grows past what the process used before it was held (+20%). Toggle: tray > Options > Auto-squeeze.
+Focusing an app lifts its ceiling at once (the first moments after returning to it reload pages, that is unavoidable).

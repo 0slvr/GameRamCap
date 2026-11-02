@@ -68,5 +68,9 @@
     }
   ],
   "HoldMinProcessMB": 64,
-  "HoldKeepPercent": 60
+  "HoldKeepPercent": 60,
+  "AutoSqueeze": true,
+  "AutoMinProcessMB": 16,
+  "AutoFaultRate": 150,
+  "AutoProbeSeconds": 10
 }

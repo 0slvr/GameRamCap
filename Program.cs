@@ -53,7 +53,7 @@ sealed class TrayContext : ApplicationContext
     readonly List<ToolStripMenuItem> _profileItems = new();
     readonly List<ToolStripMenuItem> _modeItems = new();
     ToolStripMenuItem _holdItem = null!, _everythingItem = null!, _focusItem = null!,
-                      _fullscreenItem = null!, _pressureItem = null!;
+                      _fullscreenItem = null!, _pressureItem = null!, _autoItem = null!;
     bool _syncing;
 
     public TrayContext()
@@ -110,6 +110,7 @@ sealed class TrayContext : ApplicationContext
         _focusItem      = Toggle("Focus mode (never limit the app I'm using)", v => _engine.Config.FocusMode = v);
         _everythingItem = Toggle("Limit all apps, not just my list",           v => _engine.Config.LimitEverything = v);
         _holdItem       = Toggle("Hold background apps (hard ceiling, Smart)",  v => _engine.Config.HoldBackground = v);
+        _autoItem       = Toggle("Auto-squeeze (lowest RAM without stutter)", v => _engine.Config.AutoSqueeze = v);
         _pressureItem   = Toggle("Only limit when RAM is low (Custom profile)", v => _engine.Config.LimitWhenRamFree = !v);
         _fullscreenItem = Toggle("Auto-detect fullscreen games",                v => _engine.Config.AutoDetectFullscreen = v);
         menu.Items.Add(options);
@@ -159,7 +160,7 @@ sealed class TrayContext : ApplicationContext
     void RefreshModeChecks()
     {
         if (_focusItem == null || _everythingItem == null || _holdItem == null
-            || _pressureItem == null || _fullscreenItem == null) return; // menu not built yet (LoadConfig runs first)
+            || _pressureItem == null || _fullscreenItem == null || _autoItem == null) return; // menu not built yet (LoadConfig runs first)
         _syncing = true;
         try
         {
@@ -170,6 +171,8 @@ sealed class TrayContext : ApplicationContext
             _everythingItem.Checked = c.LimitEverything;
             _holdItem.Checked = c.HoldBackground;
             _holdItem.Enabled = c.IsSmart();
+            _autoItem.Checked = c.AutoSqueeze;
+            _autoItem.Enabled = c.IsSmart();
             _pressureItem.Checked = !c.LimitWhenRamFree;
             _fullscreenItem.Checked = c.AutoDetectFullscreen;
         }
