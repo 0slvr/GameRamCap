@@ -17,41 +17,28 @@ internal sealed class TargetsForm : Form
         RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, BackgroundColor = SystemColors.Window,
     };
-    readonly TextBox _manual = new() { Width = 130, PlaceholderText = "app name (no .exe)" };
-    readonly NumericUpDown _bulk = new() { Minimum = 1, Maximum = 4000, Value = 50, Width = 70 };
-    readonly CheckBox _fixed = new() { Text = "fixed (never grows)", Checked = true, AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
-    readonly NumericUpDown _defCeil = new() { Minimum = 20, Maximum = 8000, Value = 300, Width = 70 };
-    readonly CheckBox _defFixed = new() { Text = "fixed (never grows)", AutoSize = true, Margin = new Padding(3, 7, 20, 3) };
-    readonly CheckBox _everything = new()
-    {
-        Text = "Limit EVERYTHING (games + all apps), not just this list", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
-    };
-    readonly CheckBox _focus = new()
-    {
-        Text = "Focus mode: free the app I'm using, limit the rest", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
-    };
-    readonly CheckBox _always = new()
-    {
-        Text = "Limit these apps all the time (not only while a game runs)", AutoSize = true, Margin = new Padding(3, 8, 20, 3),
-        Visible = false, // old mode, ignored while Focus mode is on
-    };
+    readonly TextBox _manual = new() { Width = 150, PlaceholderText = "app name (no .exe)", Margin = new Padding(3, 6, 3, 3) };
+    readonly NumericUpDown _defCeil = new() { Minimum = 20, Maximum = 8000, Value = 300, Width = 70, Margin = new Padding(3, 6, 3, 3) };
+    readonly CheckBox _defFixed = new() { Text = "fixed (never grows)", AutoSize = true, Margin = new Padding(8, 8, 3, 3) };
+    readonly CheckBox _everything = new() { Text = "Limit all apps, not just this list", AutoSize = true, Margin = new Padding(3, 8, 20, 3) };
+    readonly CheckBox _focus = new() { Text = "Focus mode: don't limit the app I'm using", AutoSize = true, Margin = new Padding(3, 8, 20, 3) };
 
     public TargetsForm()
     {
         Text = "GameRamCap - apps, limits and exceptions";
         ClientSize = new Size(920, 540);
-        MinimumSize = new Size(780, 420);
+        MinimumSize = new Size(780, 440);
         StartPosition = FormStartPosition.CenterScreen;
 
         _running.Columns.Add("Running app", 170);
         _running.Columns.Add("RAM", 70);
         _running.Columns.Add("Processes", 70);
 
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Exe", HeaderText = "App", ReadOnly = true, FillWeight = 130 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Ceiling", HeaderText = "Ceiling MB", FillWeight = 70 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Min", HeaderText = "Min MB", FillWeight = 60 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Max", HeaderText = "Max MB", FillWeight = 60 });
-        _grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Adaptive", HeaderText = "Adaptive", FillWeight = 60 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Exe", HeaderText = "App", ReadOnly = true, FillWeight = 130, MinimumWidth = 90 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Ceiling", HeaderText = "Limit MB", FillWeight = 70, MinimumWidth = 70 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Min", HeaderText = "Min MB", FillWeight = 60, MinimumWidth = 65 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Max", HeaderText = "Max MB", FillWeight = 60, MinimumWidth = 65 });
+        _grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Adaptive", HeaderText = "Adaptive", FillWeight = 60, MinimumWidth = 75 });
 
         // Left: running apps
         var left = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
@@ -59,7 +46,7 @@ internal sealed class TargetsForm : Form
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        left.Controls.Add(new Label { Text = "Running apps (double-click or press Add)", AutoSize = true }, 0, 0);
+        left.Controls.Add(new Label { Text = "Running apps (double-click to add)", AutoSize = true }, 0, 0);
         left.Controls.Add(_search, 0, 1);
         left.Controls.Add(_running, 0, 2);
         var leftButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
@@ -74,10 +61,7 @@ internal sealed class TargetsForm : Form
         right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        right.Controls.Add(new Label
-        {
-            Text = "Limited apps (edit the numbers; Adaptive lets the ceiling grow when the app is busy)", AutoSize = true,
-        }, 0, 0);
+        right.Controls.Add(new Label { Text = "Apps with their own limit (edit the numbers)", AutoSize = true }, 0, 0);
         right.Controls.Add(_grid, 0, 1);
         var rightButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         var remove = new Button { Text = "Remove selected", AutoSize = true };
@@ -85,32 +69,32 @@ internal sealed class TargetsForm : Form
         rightButtons.Controls.Add(remove);
         rightButtons.Controls.Add(_manual);
         rightButtons.Controls.Add(addManual);
-        var applyAll = new Button { Text = "Set ALL to (MB):", AutoSize = true };
-        rightButtons.Controls.Add(applyAll);
-        rightButtons.Controls.Add(_bulk);
-        rightButtons.Controls.Add(_fixed);
         right.Controls.Add(rightButtons, 0, 2);
 
-        // Bottom
-        var bottom = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+        // Bottom: three tidy rows
+        var defaults = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        defaults.Controls.Add(new Label { Text = "Limit for apps not in the list (MB):", AutoSize = true, Margin = new Padding(3, 9, 3, 3) });
+        defaults.Controls.Add(_defCeil);
+        defaults.Controls.Add(_defFixed);
+
+        var options = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        var exceptions = new Button { Text = "Exceptions...", AutoSize = true };
+        options.Controls.Add(_everything);
+        options.Controls.Add(_focus);
+        options.Controls.Add(exceptions);
+
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
         var save = new Button { Text = "Save", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true };
-        var exceptions = new Button { Text = "Exceptions...", AutoSize = true };
-        bottom.Controls.Add(new Label
-        {
-            Text = "Limit for everything NOT in the list (MB):", AutoSize = true, Margin = new Padding(3, 9, 3, 3),
-        });
-        bottom.Controls.Add(_defCeil);
-        bottom.Controls.Add(_defFixed);
-        bottom.SetFlowBreak(_defFixed, true);
-        bottom.Controls.Add(_everything);
-        bottom.Controls.Add(_focus);
-        bottom.Controls.Add(exceptions);
-        bottom.Controls.Add(_always);
-        bottom.Controls.Add(save);
-        bottom.Controls.Add(close);
+        buttons.Controls.Add(close);
+        buttons.Controls.Add(save);
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(10) };
+        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 3 };
+        bottom.Controls.Add(defaults, 0, 0);
+        bottom.Controls.Add(options, 0, 1);
+        bottom.Controls.Add(buttons, 0, 2);
+
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(12) };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -121,7 +105,6 @@ internal sealed class TargetsForm : Form
         root.SetColumnSpan(bottom, 2);
         Controls.Add(root);
 
-        _always.Checked = _cfg.AlwaysLimit;
         _focus.Checked = _cfg.FocusMode;
         _everything.Checked = _cfg.LimitEverything;
         _defCeil.Value = Math.Clamp(_cfg.DefaultCeilingMB, (int)_defCeil.Minimum, (int)_defCeil.Maximum);
@@ -136,7 +119,6 @@ internal sealed class TargetsForm : Form
         _running.DoubleClick += (_, _) => AddSelected();
         remove.Click += (_, _) => RemoveSelected();
         addManual.Click += (_, _) => AddManual();
-        applyAll.Click += (_, _) => ApplyAll();
         exceptions.Click += (_, _) => { using var f = new ExceptionsForm(_cfg); f.ShowDialog(this); };
         save.Click += (_, _) => Save();
         close.Click += (_, _) => Close();
@@ -204,18 +186,6 @@ internal sealed class TargetsForm : Form
         RefreshRunning();
     }
 
-    void ApplyAll()
-    {
-        int n = (int)_bulk.Value;
-        foreach (DataGridViewRow r in _grid.Rows)
-        {
-            r.Cells["Ceiling"].Value = n;
-            r.Cells["Min"].Value = _fixed.Checked ? n : Math.Max(1, n / 2);
-            r.Cells["Max"].Value = _fixed.Checked ? n : n * 3;
-            r.Cells["Adaptive"].Value = !_fixed.Checked;
-        }
-    }
-
     void RemoveSelected()
     {
         foreach (DataGridViewRow r in _grid.SelectedRows.Cast<DataGridViewRow>().ToList())
@@ -242,7 +212,6 @@ internal sealed class TargetsForm : Form
                                   FocusAlso = old?.FocusAlso ?? new() });
         }
         _cfg.Targets = list;
-        _cfg.AlwaysLimit = _always.Checked;
         _cfg.FocusMode = _focus.Checked;
         _cfg.LimitEverything = _everything.Checked;
         int d = (int)_defCeil.Value;
