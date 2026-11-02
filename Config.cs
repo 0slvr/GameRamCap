@@ -18,6 +18,9 @@ internal sealed class Config
     public bool Enabled { get; set; } = true;
     /// <summary>Seconds a game must stay in the foreground before limits are applied.</summary>
     public int DelaySeconds { get; set; } = 5;
+    /// <summary>Keep the limits applied while the game process is running, even if you Alt+Tab away
+    /// (Task Manager, browser...). They are released only when the game closes.</summary>
+    public bool KeepLimitsWhileGameRuns { get; set; } = true;
     /// <summary>Treat any borderless/fullscreen foreground window as a game.</summary>
     public bool AutoDetectFullscreen { get; set; } = true;
     /// <summary>Process names (no ".exe") that always count as a game when in the foreground.</summary>
