@@ -2,30 +2,26 @@ using System.Diagnostics;
 
 namespace GameRamCap;
 
-// Focus mode: the app you are using is never limited, everything else is (or only the Targets list,
-// when LimitEverything is off).
+// Focus helpers used by the lab: who counts as "focused", and which fullscreen apps are games.
 internal sealed partial class Engine
 {
-    // Apps whose visible window belongs to a different process than the one we limit.
+    // Apps whose visible window belongs to a different process than the one we reduce.
     static readonly Dictionary<string, string[]> DefaultAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["steamwebhelper"] = new[] { "steam" },
     };
 
-    readonly HashSet<string> _exempt = new(StringComparer.OrdinalIgnoreCase);          // names with no limit right now
-    readonly Dictionary<string, DateTime> _exemptUntil = new(StringComparer.OrdinalIgnoreCase);
-    readonly Dictionary<string, long> _learned = new(StringComparer.OrdinalIgnoreCase); // adaptive ceilings
     string _focusName = "";
-    DateTime _failReset = DateTime.UtcNow;
 
-    // Fullscreen/borderless apps seen in front are treated as games and are NEVER trimmed or capped while they
-    // run - even after you Alt+Tab away (trimming a game in the background makes it stutter when you return).
+    // Fullscreen/borderless apps seen in front are treated as games and are NEVER touched while they run,
+    // even after you Alt+Tab away.
     readonly HashSet<string> _gameNames = new(StringComparer.OrdinalIgnoreCase);
     DateTime _lastGameCheck = DateTime.MinValue;
 
     static bool IsRunning(string name)
     {
-        var ps = Safe(() => Process.GetProcessesByName(name));
+        Process[] ps;
+        try { ps = Process.GetProcessesByName(name); } catch { return false; }
         bool running = ps.Length > 0;
         foreach (var p in ps) p.Dispose();
         return running;
@@ -36,7 +32,7 @@ internal sealed partial class Engine
         if (!Config.AutoDetectFullscreen) { _gameNames.Clear(); return; }
 
         if (fg.Length > 0 && !_gameNames.Contains(fg)
-            && !Protected.Contains(fg) && !IsException(fg)
+            && !Protected.Contains(fg)
             && !Config.FullscreenIgnore.Contains(fg, StringComparer.OrdinalIgnoreCase)
             && !Config.Targets.Any(t => string.Equals(t.Exe, fg, StringComparison.OrdinalIgnoreCase)))
         {
@@ -44,7 +40,7 @@ internal sealed partial class Engine
             if (hwnd != IntPtr.Zero && IsFullscreen(hwnd))
             {
                 _gameNames.Add(fg);
-                Logger.Write($"Fullscreen app detected: {fg} - protected from trimming while it runs.");
+                Logger.Write($"Fullscreen app detected: {fg} - protected (never touched) while it runs.");
             }
         }
 
@@ -55,78 +51,20 @@ internal sealed partial class Engine
         }
     }
 
-    static string ForegroundName()
+    static bool IsFullscreen(IntPtr hwnd)
     {
-        try
-        {
-            var hwnd = Native.GetForegroundWindow();
-            if (hwnd == IntPtr.Zero) return "";
-            Native.GetWindowThreadProcessId(hwnd, out uint pid);
-            if (pid == 0) return "";
-            using var p = Process.GetProcessById((int)pid);
-            return p.ProcessName;
-        }
-        catch { return ""; }
+        if (!Native.GetWindowRect(hwnd, out var r)) return false;
+        var b = Screen.FromHandle(hwnd).Bounds;
+        return r.Left <= b.Left && r.Top <= b.Top && r.Right >= b.Right && r.Bottom >= b.Bottom;
     }
 
-    static bool IsFocused(Target t, string fg)
+    /// <summary>True when the foreground process (fg) is this app: same name, a FocusAlso name, or a built-in alias.</summary>
+    bool IsFocused(string app, string fg)
     {
         if (fg.Length == 0) return false;
-        if (string.Equals(t.Exe, fg, StringComparison.OrdinalIgnoreCase)) return true;
-        if (t.FocusAlso.Contains(fg, StringComparer.OrdinalIgnoreCase)) return true;
-        return DefaultAliases.TryGetValue(t.Exe, out var a) && a.Contains(fg, StringComparer.OrdinalIgnoreCase);
-    }
-
-    void TickFocus()
-    {
-        if (!(Enabled && Config.Enabled))
-        {
-            if (_wasActive) { _wasActive = false; Logger.Write("Disabled - limits restored."); }
-            _exempt.Clear(); _exemptUntil.Clear();
-            RestoreAll();
-            Status = "Disabled";
-            return;
-        }
-        _wasActive = true;
-
-        string fg = ForegroundName();
-        if (fg != _focusName) { _focusName = fg; Logger.Write($"Focus: {fg}"); }
-
-        var now = DateTime.UtcNow;
-        var delay = TimeSpan.FromSeconds(Math.Max(0, Config.RelimitDelaySeconds));
-
-        // A process that was refused once (busy, transient error) gets another chance every 5 minutes.
-        if ((now - _failReset).TotalMinutes >= 5) { _failReset = now; _failLogged.Clear(); }
-        TrackFullscreenGame(fg, now);
-
-        // Names that count as "in focus" right now: the foreground app + any target it stands for.
-        var focusNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (fg.Length > 0) focusNames.Add(fg);
-        foreach (var t in Config.Targets)
-            if (!string.IsNullOrWhiteSpace(t.Exe) && IsFocused(t, fg)) focusNames.Add(t.Exe);
-
-        foreach (var n in focusNames) _exemptUntil[n] = DateTime.MaxValue;
-        foreach (var key in _exemptUntil.Keys.ToList())
-        {
-            if (focusNames.Contains(key)) continue;
-            var until = _exemptUntil[key];
-            if (until == DateTime.MaxValue) until = now + delay;   // focus was just lost
-            if (now < until) _exemptUntil[key] = until;
-            else _exemptUntil.Remove(key);
-        }
-        _exempt.Clear();
-        foreach (var k in _exemptUntil.Keys) _exempt.Add(k);
-
-        if (Config.IsSmart())
-        {
-            ApplySmart();
-            Status = _smartInfo + (fg.Length > 0 ? $" - {fg} in focus (free)" : "");
-            return;
-        }
-
-        if (Config.LimitEverything) ApplyEverything();
-        else ApplyAndAdapt();
-
-        Status = $"Limiting {_limited.Count} process(es)" + (fg.Length > 0 ? $" - {fg} in focus (free)" : "");
+        if (string.Equals(app, fg, StringComparison.OrdinalIgnoreCase)) return true;
+        var t = Config.Targets.FirstOrDefault(x => string.Equals(x.Exe, app, StringComparison.OrdinalIgnoreCase));
+        if (t != null && t.FocusAlso.Contains(fg, StringComparer.OrdinalIgnoreCase)) return true;
+        return DefaultAliases.TryGetValue(app, out var a) && a.Contains(fg, StringComparer.OrdinalIgnoreCase);
     }
 }

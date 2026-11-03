@@ -4,8 +4,7 @@ using System.Text.Json;
 namespace GameRamCap;
 
 // =====================================================================================================
-//  LAB: one experiment at a time (Config.Experiment). While a lab run is active the normal Smart/Hard
-//  logic is NOT executed, so every result belongs to exactly one change.
+//  LAB: one experiment at a time (Config.Experiment), so every result belongs to exactly one change.
 //
 //  Rules built in:
 //   * Experiments touch an app ONLY while it is not focused (SetWinEventHook foreground event + polling fallback)
@@ -185,7 +184,7 @@ internal sealed partial class Engine
 
     // ------------------------------------------------------------------ snapshot / grouping
     bool LabInScope(string name) =>
-        !Protected.Contains(name) && !IsException(name)
+        !Protected.Contains(name)
         && !Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase) && !_gameNames.Contains(name)
         && (Config.LabEverything || Config.Targets.Any(t => string.Equals(t.Exe, name, StringComparison.OrdinalIgnoreCase)));
 
@@ -319,7 +318,7 @@ internal sealed partial class Engine
 
         foreach (var a in _lab.Values.ToList())
         {
-            bool foc = name.Length > 0 && IsFocused(ResolveTarget(a.Name), name);
+            bool foc = name.Length > 0 && IsFocused(a.Name, name);
             a.Focused = foc;
             if (foc)
             {
@@ -336,7 +335,7 @@ internal sealed partial class Engine
         bool fgKnown = _fgName.Length > 0;
         foreach (var a in _lab.Values.ToList())
         {
-            a.Focused = fgKnown && IsFocused(ResolveTarget(a.Name), _fgName);
+            a.Focused = fgKnown && IsFocused(a.Name, _fgName);
             a.Visible = !a.Focused && _labVisible.Contains(a.Name);
             bool eff = a.Focused || (a.Visible && VisibleForeground);
             if (eff)
