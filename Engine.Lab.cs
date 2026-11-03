@@ -9,7 +9,7 @@ namespace GameRamCap;
 //  Rules built in:
 //   * Experiments touch an app ONLY while it is not focused (SetWinEventHook foreground event + polling fallback)
 //     and only after UnfocusDelaySeconds. Focus back = everything is restored at once, from the hook callback.
-//   * The focused app, detected fullscreen games, Config.Games, Protected (system / anti-cheat / OBS...) are never touched.
+//   * The focused app and Protected processes (system / anti-cheat / OBS...) are never touched.
 //     No handle is ever opened to them: the process list comes from NtQuerySystemInformation (no handles).
 //   * Audio / mic / capture protection is automatic (WASAPI on all devices + notifications + ConsentStore).
 //   * Every episode (action -> restore) is logged to %APPDATA%\GameRamCap\lab\episodes.csv.
@@ -185,7 +185,6 @@ internal sealed partial class Engine
     // ------------------------------------------------------------------ snapshot / grouping
     bool LabInScope(string name) =>
         !Protected.Contains(name)
-        && !Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase) && !_gameNames.Contains(name)
         && (Config.LabEverything || Config.Targets.Any(t => string.Equals(t.Exe, name, StringComparison.OrdinalIgnoreCase)));
 
     void LabSnapshot(DateTime now)
@@ -314,7 +313,6 @@ internal sealed partial class Engine
         _fgName = name;
         if (name != _focusName) { _focusName = name; Logger.Write($"Focus: {name}"); }
         var now = DateTime.UtcNow;
-        TrackFullscreenGame(name, now);
 
         foreach (var a in _lab.Values.ToList())
         {

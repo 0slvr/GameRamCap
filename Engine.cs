@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace GameRamCap;
 
 // Lab engine, split into partial files:
-//   Engine.cs (core / tick) | Engine.Focus.cs (focus + game detection) | Engine.Lab.cs (the experiments)
+//   Engine.cs (core / tick) | Engine.Focus.cs (focus) | Engine.Lab.cs (the experiments)
 internal sealed partial class Engine : IDisposable
 {
     const long MB = 1024 * 1024;
@@ -23,6 +23,12 @@ internal sealed partial class Engine : IDisposable
         // Shell + recording/streaming tools: trimming these causes lag or dropped frames.
         "explorer", "obs64", "obs32", "Streamlabs OBS", "NVIDIA Share", "nvsphelper64", "ShellHost", "SearchIndexer",
     };
+
+    // The exe may be renamed (GameRamCap-v0.1.30.exe): protect our own process name too.
+    static Engine()
+    {
+        try { Protected.Add(Process.GetCurrentProcess().ProcessName); } catch { }
+    }
 
     public Config Config { get; set; } = new();
     public bool Enabled { get; set; } = true;

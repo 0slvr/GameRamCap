@@ -14,9 +14,6 @@
   "LabSuspendDelaySeconds": 120,
   "LabAudioNotifications": true,
   "AudioProtectGraceSeconds": 8,
-  "AutoDetectFullscreen": true,
-  "Games": [],
-  "FullscreenIgnore": ["chrome", "msedge", "firefox", "brave", "opera", "vlc", "explorer"],
   "Targets": [
     { "Exe": "Discord", "FocusAlso": [] },
     { "Exe": "claude", "FocusAlso": [] },

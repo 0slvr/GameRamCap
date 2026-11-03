@@ -16,7 +16,7 @@ Requires the .NET 8 SDK.
 
 ## Safety
 
-- System processes, anti-cheat services, OBS / recording tools and detected fullscreen games are never touched (list in `Engine.cs`). No handle is opened to a game.
+- System processes, anti-cheat services and OBS / recording tools are never touched (list in `Engine.cs`). The app in focus is never touched. No game detection: any app not in focus is treated the same.
 - End Task is covered: a hidden watchdog copy (`GameRamCap.exe --watchdog <pid>`) lifts leftover hard limits and resumes suspended processes.
 - Results are in `%APPDATA%\GameRamCap\lab\`.
 

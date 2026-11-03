@@ -6,7 +6,7 @@
 ## 0) التجهيز (مرة وحدة)
 1. افتح PowerShell **كـ Admin** وشغّل `Lab-Scripts\Lab-Setup.ps1` → يسوي Restore Point ويطبع مواصفاتك (RAM/GPU/MMAgent/Pagefile). **ارسل لي ناتجه.**
 2. بناء التطبيق: `dotnet build -c Release` (يحتاج .NET 8 SDK، ويجلب package اسمه System.Diagnostics.PerformanceCounter).
-3. شغّل `GameRamCap.exe`. اللعبة تُكتشف تلقائيًا (fullscreen) أو أضفها في `Games` بملف config.
+3. شغّل `GameRamCap.exe`. ما في كشف ألعاب: أي تطبيق مو بالفوكس يُعامل نفس الشي.
 4. كل النتائج تنحفظ في `%APPDATA%\GameRamCap\lab\` (من التراي: Lab experiment ▸ Open lab folder).
 
 ## 1) طريقة الاختبار (مهمة جدًا)
@@ -70,5 +70,5 @@
 ## 5) حدود وتنبيهات
 - حماية الصوت: عملية تملك stream فعّال (render **أو** mic على **كل** الأجهزة النشطة، مو بس الافتراضي) + أجدادها بنفس الاسم + التنبيهات الجديدة (IAudioSessionNotification، 15 ثانية) + فترة سماح. المايك/الكاميرا/screen capture بالـ ConsentStore تحمي **التطبيق كله**. هذا الجزء **[Guess/غير رسمي]**.
 - "ظاهر لكن مو بالفوكس" = نافذة مرئية، مو مصغّرة، مو cloaked، مو بالكامل تحت نافذة الفوكس (تخمين لتغطية اللعبة).
-- لا يفتح handle للعبة أبدًا: قائمة العمليات من NtQuerySystemInformation (بدون handles)، والاستثناءات: Protected + Games + الألعاب المكتشفة. مع هذا، **اختبر مع anti-cheat لعبتك على مسؤوليتك**.
+- لا يفتح handle للعبة أبدًا: قائمة العمليات من NtQuerySystemInformation (بدون handles)، والاستثناء الوحيد: قائمة Protected. إذا شغّلت "Test ALL apps" ولعبتك بالخلفية رح تنعامل مثل أي تطبيق، فخلّ الاختبار على قائمة التطبيقات. مع هذا، **اختبر مع anti-cheat لعبتك على مسؤوليتك**.
 - التراكيب (offsets) الخاصة بـ SYSTEM_PROCESS_INFORMATION لـ x64 فقط **[Test]**: إذا `hardfaults_s` كلها صفر دائمًا أو الأسماء فاضية، قل لي.

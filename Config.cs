@@ -49,15 +49,6 @@ internal sealed class Config
     /// <summary>Seconds a process stays protected after its audio stops.</summary>
     public double AudioProtectGraceSeconds { get; set; } = 8;
 
-    // ================= Game protection =================
-    /// <summary>Treat any borderless/fullscreen foreground window as a game (never touched).</summary>
-    public bool AutoDetectFullscreen { get; set; } = true;
-    /// <summary>Process names (no ".exe") that always count as a game (never touched).</summary>
-    public List<string> Games { get; set; } = new();
-    /// <summary>Fullscreen apps that are NOT games (video players, browsers...).</summary>
-    public List<string> FullscreenIgnore { get; set; } = new()
-        { "chrome", "msedge", "firefox", "brave", "opera", "vlc", "explorer" };
-
     /// <summary>Apps that take part in the experiments (used when LabEverything is false).</summary>
     public List<Target> Targets { get; set; } = new()
     {

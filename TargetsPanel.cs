@@ -11,7 +11,7 @@ internal sealed class TargetsPanel : UserControl
         View = View.Details, FullRowSelect = true, MultiSelect = true, HideSelection = false, Dock = DockStyle.Fill,
     };
     readonly ListBox _chosen = new() { Dock = DockStyle.Fill, SelectionMode = SelectionMode.MultiExtended };
-    readonly CheckBox _everything = new() { Text = "Test ALL apps (audio / mic apps are protected automatically)", AutoSize = true, Margin = new Padding(3, 8, 3, 3) };
+    readonly CheckBox _everything = new() { Text = "Test ALL apps except system ones (audio / mic apps protected automatically)", AutoSize = true, Margin = new Padding(3, 8, 3, 3) };
     readonly Label _saved = new() { AutoSize = true, Margin = new Padding(12, 9, 3, 3), ForeColor = Color.SeaGreen };
 
     public TargetsPanel()
