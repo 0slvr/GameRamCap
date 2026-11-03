@@ -2,13 +2,12 @@ using System.Diagnostics;
 
 namespace GameRamCap;
 
-/// <summary>Main window: choose the experiment, delay, visible-mode and apps, see the live status and log.</summary>
+/// <summary>Main window: choose the experiment, visible-mode and apps, see the live status and log.</summary>
 internal sealed class MainForm : Form
 {
     readonly Engine _engine;
     readonly Action _save;
     readonly Dictionary<string, RadioButton> _exp = new();
-    readonly Dictionary<int, RadioButton> _delay = new();
     readonly Dictionary<string, RadioButton> _vis = new();
     readonly Button _toggle = new() { Height = 44, Dock = DockStyle.Top, Font = new Font("Segoe UI", 11f, FontStyle.Bold) };
     readonly Label _status = new() { Dock = DockStyle.Top, AutoSize = false, Height = 40, Padding = new Padding(0, 8, 0, 0) };
@@ -73,18 +72,6 @@ internal sealed class MainForm : Form
         expBox.Controls.Add(expFlow);
 
         // ---- settings (right)
-        var delayBox = new GroupBox { Text = "Delay before reducing", Dock = DockStyle.Top, Height = 62 };
-        var delayFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(6, 2, 6, 2) };
-        foreach (int sec in new[] { 5, 30, 120 })
-        {
-            var rb = new RadioButton { Text = $"{sec} s", AutoSize = true, Margin = new Padding(3, 4, 12, 3) };
-            int s = sec;
-            rb.CheckedChanged += (_, _) => { if (_syncing || !rb.Checked) return; Cfg.UnfocusDelaySeconds = s; _save(); };
-            _delay[sec] = rb;
-            delayFlow.Controls.Add(rb);
-        }
-        delayBox.Controls.Add(delayFlow);
-
         var visBox = new GroupBox { Text = "App visible but not focused", Dock = DockStyle.Top, Height = 84 };
         var visFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(6, 2, 6, 2) };
         foreach (var (key, label) in new[] { ("Background", "Treat as background (reduce it)"), ("Foreground", "Treat as foreground (leave it)") })
@@ -110,8 +97,6 @@ internal sealed class MainForm : Form
         right.Controls.Add(_toggle);
         right.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 8 });
         right.Controls.Add(visBox);
-        right.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 8 });
-        right.Controls.Add(delayBox);
 
         // ---- bottom: log + shortcuts
         var shortcuts = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(0, 4, 0, 0) };
@@ -160,7 +145,6 @@ internal sealed class MainForm : Form
             string cur = Cfg.Experiment;
             foreach (var (key, rb) in _exp)
                 rb.Checked = string.Equals(key, Running ? cur : _startKey, StringComparison.OrdinalIgnoreCase);
-            foreach (var (sec, rb) in _delay) rb.Checked = Math.Abs(sec - Cfg.UnfocusDelaySeconds) < 0.01;
             foreach (var (key, rb) in _vis) rb.Checked = string.Equals(key, Cfg.VisibleMode, StringComparison.OrdinalIgnoreCase);
             _toggle.Text = Running ? "■  Stop experiment" : "▶  Start experiment";
             _toggle.BackColor = Running ? Color.FromArgb(255, 205, 205) : Color.FromArgb(205, 240, 205);

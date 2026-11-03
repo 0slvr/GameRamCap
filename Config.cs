@@ -21,8 +21,6 @@ internal sealed class Config
     /// E2s (soft working-set limit), E2h (hard working-set limit), E5 (thread memory priority),
     /// E6 (adaptive controller), E8 (suspend + trim, RISKY).</summary>
     public string Experiment { get; set; } = "Off";
-    /// <summary>Seconds an app must stay unfocused before the experiment touches it (try 5, 30, 120).</summary>
-    public double UnfocusDelaySeconds { get; set; } = 30;
     /// <summary>"Background": a visible but unfocused app (Discord on a 2nd monitor) is treated as background.
     /// "Foreground": a visible app counts as foreground and is left alone.</summary>
     public string VisibleMode { get; set; } = "Background";
@@ -42,7 +40,7 @@ internal sealed class Config
     public double LabAudioHardFaultLimit { get; set; } = 1.0;
     /// <summary>E6: seconds without a problem before tightening one step.</summary>
     public int LabControllerQuietSeconds { get; set; } = 60;
-    /// <summary>E8: minimum unfocused seconds before an app is suspended (the larger of this and UnfocusDelaySeconds is used).</summary>
+    /// <summary>E8: minimum unfocused seconds before an app is suspended (E8 only: suspending breaks network connections, so it keeps its own wait).</summary>
     public double LabSuspendDelaySeconds { get; set; } = 120;
     /// <summary>Also register IAudioSessionNotification (catches new audio sessions the enumerator misses).</summary>
     public bool LabAudioNotifications { get; set; } = true;

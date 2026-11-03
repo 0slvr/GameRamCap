@@ -8,7 +8,7 @@ namespace GameRamCap;
 //
 //  Rules built in:
 //   * Experiments touch an app ONLY while it is not focused (SetWinEventHook foreground event + polling fallback)
-//     and only after UnfocusDelaySeconds. Focus back = everything is restored at once, from the hook callback.
+//     immediately when they lose focus (no delay). Focus back = everything is restored at once, from the hook callback.
 //   * The focused app and Protected processes (system / anti-cheat / OBS...) are never touched.
 //     No handle is ever opened to them: the process list comes from NtQuerySystemInformation (no handles).
 //   * Audio / mic / capture protection is automatic (WASAPI on all devices + notifications + ConsentStore).
@@ -93,7 +93,7 @@ internal sealed partial class Engine
         _labRun = $"{exp}-{DateTime.Now:yyyyMMdd-HHmmss}";
         _labCsvSys ??= new LabCsv("system.csv", "fg,avail_mb,modified_mb,standby_mb,commit_mb,commit_limit_mb,commit_pct,pagefile_pct,page_reads_s,pages_input_s,gpu_adapter_ded_mb,reduced_apps");
         _labCsvApps ??= new LabCsv("apps.csv", "app,procs,ws_mb,private_mb,hardfaults_s,protected_hardfaults_s,audio_active_pids,audio_any_pids,capture_in_use,focused,visible,reduced,level,gpu_ded_mb");
-        _labCsvEp ??= new LabCsv("episodes.csv", "app,reason,unfocused_s,delay_cfg_s,visible_mode,was_visible,protected_pids,ws_before_mb,ws_after_mb,freed_mb,avail_delta_mb,focus_to_restore_ms,restore_ms,ui_responsive_ms,hardfaults_3s,level");
+        _labCsvEp ??= new LabCsv("episodes.csv", "app,reason,unfocused_s,visible_mode,was_visible,protected_pids,ws_before_mb,ws_after_mb,freed_mb,avail_delta_mb,focus_to_restore_ms,restore_ms,ui_responsive_ms,hardfaults_3s,level");
         _labMet ??= new LabMetrics();
         _lab.Clear(); _labPending.Clear(); _labAudioLast.Clear(); _labAudioLogged.Clear(); _labCapLogged.Clear(); _labMismatchLogged.Clear();
         _labAppsHf.Clear(); _labHfPrev.Clear(); _labCtlAt = DateTime.MinValue; _labReadsSum = 0; _labReadsN = 0;
@@ -107,7 +107,7 @@ internal sealed partial class Engine
             Logger.Write(_labHook == IntPtr.Zero ? "LAB: SetWinEventHook FAILED - using polling only." : "LAB: SetWinEventHook(EVENT_SYSTEM_FOREGROUND) installed.");
         }
         _labStarted = true;
-        Logger.Write($"LAB START {exp} run={_labRun} delay={Config.UnfocusDelaySeconds}s visibleMode={Config.VisibleMode} scope={(Config.LabEverything ? "everything" : "Targets")} " +
+        Logger.Write($"LAB START {exp} run={_labRun} no-delay visibleMode={Config.VisibleMode} scope={(Config.LabEverything ? "everything" : "Targets")} " +
                      $"prio={Config.LabPriorityLevel} protPrio={Config.LabProtectedPriority} folder={LabCsv.Dir}");
         if (!string.IsNullOrEmpty(_labMet.Missing)) Logger.Write("LAB: counters not available: " + _labMet.Missing);
     }
@@ -351,7 +351,7 @@ internal sealed partial class Engine
             if (a.UnfocusedSince == DateTime.MinValue) a.UnfocusedSince = now;
             if (!fgKnown) continue;                      // no foreground window (lock screen / desktop switch): do nothing
 
-            double delay = _labExp == "E8" ? Math.Max(Config.UnfocusDelaySeconds, Config.LabSuspendDelaySeconds) : Config.UnfocusDelaySeconds;
+            double delay = _labExp == "E8" ? Config.LabSuspendDelaySeconds : 0;   // no delay, except E8 (suspend)
             if (!a.Acted)
             {
                 if ((now - a.UnfocusedSince).TotalSeconds >= Math.Max(0, delay)) LabApply(a, now);
@@ -601,7 +601,7 @@ internal sealed partial class Engine
             foreach (var kv in ep.HfBase)
                 if (_labByPid.TryGetValue(kv.Key, out var row)) hf += Math.Max(0, (long)row.HardFaults - (long)kv.Value);
             double mbBefore = ep.WsBefore / 1048576.0, mbAfter = ep.WsAfter / 1048576.0;
-            _labCsvEp?.Row(ep.Run, ep.Exp, ep.App, ep.Reason, ep.UnfocusedS, Config.UnfocusDelaySeconds, Config.VisibleMode, ep.WasVisible,
+            _labCsvEp?.Row(ep.Run, ep.Exp, ep.App, ep.Reason, ep.UnfocusedS, Config.VisibleMode, ep.WasVisible,
                            ep.ProtPids, mbBefore, mbAfter, mbBefore - mbAfter, ep.AvailDelta, ep.FocusToRestoreMs, ep.RestoreMs, ep.RespMs, hf, ep.Level);
             _labPending.RemoveAt(i);
         }

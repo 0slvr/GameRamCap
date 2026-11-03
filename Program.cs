@@ -53,7 +53,7 @@ sealed class TrayContext : ApplicationContext
     public TrayContext()
     {
         LoadConfig();
-        Logger.Write($"Started. Experiment={_engine.Config.Experiment} Delay={_engine.Config.UnfocusDelaySeconds}s VisibleMode={_engine.Config.VisibleMode}");
+        Logger.Write($"Started. Experiment={_engine.Config.Experiment} VisibleMode={_engine.Config.VisibleMode}");
         Engine.ReleaseAllHardCeilings();   // clean up anything a crashed previous run left behind
         Engine.LabResumeLeftovers();
 

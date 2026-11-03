@@ -4,7 +4,7 @@ Tray app for Windows 10/11 for **experiments only**: it reduces the memory of ba
 
 ## Window
 
-- **Experiment** tab: pick E0...E8, Delay (5 / 30 / 120 s), visible-but-unfocused mode, then **Start / Stop**. Changes apply at once while running. Live status + latest log lines + shortcuts to the CSV folder, log and config.
+- **Experiment** tab: pick E0...E8, visible-but-unfocused mode, then **Start / Stop**. Changes apply at once while running. Live status + latest log lines + shortcuts to the CSV folder, log and config.
 - **Apps** tab: choose the apps in the test (or all apps; audio/mic apps are protected automatically), then Save.
 - Closing the window hides it to the tray (the experiment keeps running). Tray: Open window / Exit.
 

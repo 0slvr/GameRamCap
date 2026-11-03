@@ -1,7 +1,6 @@
 {
   "Enabled": true,
   "Experiment": "Off",
-  "UnfocusDelaySeconds": 30,
   "VisibleMode": "Background",
   "LabEverything": false,
   "LabPriorityLevel": 1,

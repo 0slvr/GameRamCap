@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>GameRamCap</AssemblyName>
     <RootNamespace>GameRamCap</RootNamespace>
-    <Version>0.3.3-lab</Version>
+    <Version>0.3.4-lab</Version>
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
