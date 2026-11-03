@@ -10,7 +10,6 @@
   "LabPageReadsLimit": 100,
   "LabAudioHardFaultLimit": 1.0,
   "LabControllerQuietSeconds": 60,
-  "LabSuspendDelaySeconds": 120,
   "LabAudioNotifications": true,
   "AudioProtectGraceSeconds": 8,
   "Targets": [

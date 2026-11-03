@@ -40,8 +40,6 @@ internal sealed class Config
     public double LabAudioHardFaultLimit { get; set; } = 1.0;
     /// <summary>E6: seconds without a problem before tightening one step.</summary>
     public int LabControllerQuietSeconds { get; set; } = 60;
-    /// <summary>E8: minimum unfocused seconds before an app is suspended (E8 only: suspending breaks network connections, so it keeps its own wait).</summary>
-    public double LabSuspendDelaySeconds { get; set; } = 120;
     /// <summary>Also register IAudioSessionNotification (catches new audio sessions the enumerator misses).</summary>
     public bool LabAudioNotifications { get; set; } = true;
     /// <summary>Seconds a process stays protected after its audio stops.</summary>

@@ -351,10 +351,9 @@ internal sealed partial class Engine
             if (a.UnfocusedSince == DateTime.MinValue) a.UnfocusedSince = now;
             if (!fgKnown) continue;                      // no foreground window (lock screen / desktop switch): do nothing
 
-            double delay = _labExp == "E8" ? Config.LabSuspendDelaySeconds : 0;   // no delay, except E8 (suspend)
             if (!a.Acted)
             {
-                if ((now - a.UnfocusedSince).TotalSeconds >= Math.Max(0, delay)) LabApply(a, now);
+                LabApply(a, now);   // no delay: act as soon as the app loses focus
             }
             else LabMaintain(a, now);
         }
