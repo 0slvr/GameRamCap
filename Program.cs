@@ -14,6 +14,7 @@ static class Program
         {
             try { using var parent = Process.GetProcessById(parentPid); parent.WaitForExit(); } catch { }
             try { int n = Engine.ReleaseAllHardCeilings(); Logger.Write($"Watchdog: main app ended, released {n} ceiling(s)."); } catch { }
+            try { Engine.LabResumeLeftovers(); } catch { }
             return;
         }
 
@@ -52,6 +53,9 @@ sealed class TrayContext : ApplicationContext
     TargetsForm? _targetsForm;
     readonly List<ToolStripMenuItem> _profileItems = new();
     readonly List<ToolStripMenuItem> _modeItems = new();
+    readonly List<ToolStripMenuItem> _labItems = new();
+    readonly List<ToolStripMenuItem> _delayItems = new();
+    readonly List<ToolStripMenuItem> _visItems = new();
     ToolStripMenuItem _holdItem = null!, _everythingItem = null!, _focusItem = null!,
                       _fullscreenItem = null!, _pressureItem = null!, _autoItem = null!,
                       _audioItem = null!, _prioItem = null!;
@@ -63,6 +67,7 @@ sealed class TrayContext : ApplicationContext
         Logger.Write($"Started. Games=[{string.Join(", ", _engine.Config.Games)}] AutoDetectFullscreen={_engine.Config.AutoDetectFullscreen} Delay={_engine.Config.DelaySeconds}s");
         _engine.ClearStaleCeilings();
         _engine.ClearStaleCeilingsEverything();
+        Engine.LabResumeLeftovers();
 
         _statusItem = new ToolStripMenuItem("Idle") { Enabled = false };
         _enabledItem = new ToolStripMenuItem("Enabled") { Checked = true, CheckOnClick = true };
@@ -99,6 +104,46 @@ sealed class TrayContext : ApplicationContext
             modeMenu.DropDownItems.Add(mi);
         }
         menu.Items.Add(modeMenu);
+
+        // ---- LAB: one experiment at a time ----
+        var labMenu = new ToolStripMenuItem("Lab experiment");
+        foreach (var (key, label) in new[]
+        {
+            ("Off", "Off (normal GameRamCap)"), ("E0", "E0  Baseline (measure only)"),
+            ("E1", "E1  Memory Priority + audio protection"), ("E2s", "E2  Working Set SOFT (idle children)"),
+            ("E2h", "E2  Working Set HARD (idle children)"), ("E5", "E5  Thread memory priority"),
+            ("E6", "E6  Adaptive controller"), ("E8", "E8  Suspend + trim (RISKY)"),
+        })
+        {
+            var mi = new ToolStripMenuItem(label) { Tag = key };
+            mi.Click += (_, _) => { _engine.Config.Experiment = key; Logger.Write($"Lab experiment set to {key}."); SaveCfg(); };
+            _labItems.Add(mi);
+            labMenu.DropDownItems.Add(mi);
+        }
+        labMenu.DropDownItems.Add(new ToolStripSeparator());
+        var delayMenu = new ToolStripMenuItem("Delay before reducing");
+        foreach (var sec in new[] { 5, 30, 120 })
+        {
+            var di = new ToolStripMenuItem($"{sec} seconds") { Tag = sec };
+            di.Click += (_, _) => { _engine.Config.UnfocusDelaySeconds = sec; SaveCfg(); };
+            _delayItems.Add(di);
+            delayMenu.DropDownItems.Add(di);
+        }
+        labMenu.DropDownItems.Add(delayMenu);
+        var visMenu = new ToolStripMenuItem("Visible but not focused app");
+        foreach (var (key, label) in new[] { ("Background", "Treat as background (reduce it)"), ("Foreground", "Treat as foreground (leave it)") })
+        {
+            var vi = new ToolStripMenuItem(label) { Tag = key };
+            vi.Click += (_, _) => { _engine.Config.VisibleMode = key; SaveCfg(); };
+            _visItems.Add(vi);
+            visMenu.DropDownItems.Add(vi);
+        }
+        labMenu.DropDownItems.Add(visMenu);
+        labMenu.DropDownItems.Add("Open lab folder (CSV files)", null, (_, _) =>
+        {
+            try { Directory.CreateDirectory(LabCsv.Dir); Process.Start(new ProcessStartInfo(LabCsv.Dir) { UseShellExecute = true }); } catch { }
+        });
+        menu.Items.Add(labMenu);
 
         var options = new ToolStripMenuItem("Options");
         ToolStripMenuItem Toggle(string text, Action<bool> apply)
@@ -170,6 +215,9 @@ sealed class TrayContext : ApplicationContext
         try
         {
             var c = _engine.Config;
+            foreach (var it in _labItems) it.Checked = string.Equals((string?)it.Tag, c.Experiment, StringComparison.OrdinalIgnoreCase);
+            foreach (var it in _delayItems) it.Checked = Math.Abs((int)it.Tag! - c.UnfocusDelaySeconds) < 0.01;
+            foreach (var it in _visItems) it.Checked = string.Equals((string?)it.Tag, c.VisibleMode, StringComparison.OrdinalIgnoreCase);
             foreach (var it in _modeItems)
                 it.Checked = string.Equals((string?)it.Tag, c.IsSmart() ? "Smart" : "Hard", StringComparison.OrdinalIgnoreCase);
             _focusItem.Checked = c.FocusMode;

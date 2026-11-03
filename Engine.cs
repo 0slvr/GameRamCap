@@ -42,6 +42,8 @@ internal sealed partial class Engine : IDisposable
 
     public void Tick()
     {
+        if (LabOn) { LabTick(); return; }
+        if (_labStarted) LabShutdown();
         if (Config.FocusMode || Config.IsSmart()) { TickFocus(); return; }
         bool gaming = Enabled && Config.Enabled && IsGaming();
         var now = DateTime.UtcNow;
@@ -88,5 +90,5 @@ internal sealed partial class Engine : IDisposable
     static T[] Safe<T>(Func<T[]> f) { try { return f(); } catch { return Array.Empty<T>(); } }
     static T Safe<T>(Func<T> f, T fallback) { try { return f(); } catch { return fallback; } }
 
-    public void Dispose() { RestoreAll(); LearnedStore.Flush(true); }
+    public void Dispose() { LabShutdown(); RestoreAll(); LearnedStore.Flush(true); }
 }

@@ -150,6 +150,7 @@ internal sealed partial class Engine
 
     public void RestoreAll()
     {
+        if (_labStarted) LabRestoreAll("restore-all");
         RestoreAllPriorities();
         if (_limited.Count == 0) return;
         foreach (var (pid, st) in _limited)
