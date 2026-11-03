@@ -26,7 +26,8 @@
 | E2h | Working Set **hard** | نفس الشي بس `QUOTA_LIMITS_HARDWS_MAX_ENABLE` | زيادة `hardfaults_s` أو `page_reads_s`، تقطيع |
 | E5 | Thread memory priority | يخفض priority لكل threads العملية غير المحمية عدا اسماء تشبه audio | أي فشل صوت. **السجل يجاوب: هل SetThreadInformation يشتغل على process ثانية؟** |
 | E6 | Adaptive | levels 0–4 (priority 3 → priority 1 → trim كل دقيقة → soft WS). كل 10 ثواني: إذا `Page Reads/sec` (متوسط) > `LabPageReadsLimit` (100) أو hard faults لعملية صوت > `LabAudioHardFaultLimit` (1/ث) → يخفف مستوى ويحفظ الحد الآمن في `lab\safe.json`. بعد 60 ثانية هادية يشدد خطوة | عدّل الحدود بعد ما تشوف أرقام E0 |
-| E8 | Suspend + trim **(RISKY)** | فقط تطبيقات من `Targets`، **صامتة تمامًا** (لا جلسة صوت حتى لو paused، لا مايك/كاميرا/capture، نافذتها مو ظاهرة)، بعد `max(delay,120s)`. ترجع (resume) عند الفوكس أو الخروج، وملف `suspended.txt` + watchdog يرجّعها حتى لو انقفل التطبيق | تنقطع اتصالات الشبكة (Discord ما يستلم رسائل بالخلفية) — متوقع |
+| E8 | Suspend + trim **(RISKY)** | فقط تطبيقات من `Targets`، **صامتة تمامًا** (لا جلسة صوت حتى لو paused، لا مايك/كاميرا/capture، نافذتها مو ظاهرة). ترجع (resume) عند الفوكس أو الخروج، وملف `suspended.txt` + watchdog يرجّعها حتى لو انقفل التطبيق | تنقطع اتصالات الشبكة (Discord ما يستلم رسائل بالخلفية) — متوقع |
+| E9 | Hard hold مثل v28 **(RISKY)** | سقف صلب على العمليات غير المحمية: كل تطبيق يحتفظ بـ `LabHoldMB` (30) × عدد عملياته، الأكبر أولاً، وما ينزل تحت max(16MB, `LabHoldKeepPercent`% من حجمه). المحمي (صوت/مايك/كاميرا) ما ينلمس | ارتفاع `hardfaults_s` أو `page_reads_s`، تقطيع صوت، stutter. قارنه مع E2h وE0 |
 
 اختيار **Delay** (5 / 30 / 120 ثانية) و**Visible mode** (Background / Foreground) من نفس القائمة. جرّب كل واحد بجولة وقارن `episodes.csv`.
 

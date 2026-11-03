@@ -29,6 +29,7 @@ internal sealed class MainForm : Form
         ("E5", "E5   Thread memory priority"),
         ("E6", "E6   Adaptive controller"),
         ("E8", "E8   Suspend + trim  (RISKY)"),
+        ("E9", "E9   Hard hold like v28  (RISKY)"),
     };
 
     Config Cfg => _engine.Config;
@@ -58,7 +59,7 @@ internal sealed class MainForm : Form
         foreach (var (key, label) in Experiments)
         {
             var rb = new RadioButton { Text = label, AutoSize = true, Margin = new Padding(3, 5, 3, 5) };
-            if (key == "E8") rb.ForeColor = Color.Firebrick;
+            if (key == "E8" || key == "E9") rb.ForeColor = Color.Firebrick;
             string k = key;
             rb.CheckedChanged += (_, _) =>
             {
@@ -109,7 +110,7 @@ internal sealed class MainForm : Form
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(10) };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 270));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 305));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(expBox, 0, 0);

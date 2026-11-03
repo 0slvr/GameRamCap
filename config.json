@@ -6,6 +6,8 @@
   "LabPriorityLevel": 1,
   "LabProtectedPriority": 3,
   "LabWsKeepPercent": 60,
+  "LabHoldMB": 30,
+  "LabHoldKeepPercent": 15,
   "LabIdleCpuPercent": 3,
   "LabPageReadsLimit": 100,
   "LabAudioHardFaultLimit": 1.0,

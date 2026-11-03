@@ -16,7 +16,7 @@ namespace GameRamCap;
 // =====================================================================================================
 internal sealed partial class Engine
 {
-    static readonly string[] LabKnown = { "E0", "E1", "E2s", "E2h", "E5", "E6", "E8" };
+    static readonly string[] LabKnown = { "E0", "E1", "E2s", "E2h", "E5", "E6", "E8", "E9" };
 
     sealed class LabApp
     {
@@ -425,6 +425,8 @@ internal sealed partial class Engine
             }
         }
 
+        if (exp == "E9") LabHoldApp(a, now, appCap);
+
         if (exp == "E6" && level >= 3 && (now - a.LastTrim).TotalSeconds >= 60)
         {
             a.LastTrim = now;
@@ -433,6 +435,30 @@ internal sealed partial class Engine
                     Native.Trim(r.Pid);
         }
         if (exp == "E8" && a.Suspended.Count == 0 && !a.E8Skipped) LabTrySuspend(a, now);
+    }
+
+    /// <summary>E9: v28-style HARD hold. The app as a whole may keep LabHoldMB x its process count; the biggest
+    /// non-protected processes get a hard working-set ceiling first, each only as far as needed and never below
+    /// max(16 MB, LabHoldKeepPercent of its size). Apps using mic / camera / capture, and processes that own an
+    /// audio stream, are never capped. Restored the moment the app gets focus.</summary>
+    void LabHoldApp(LabApp a, DateTime now, bool appCap)
+    {
+        if (appCap) return;
+        long target = (long)Math.Max(8, Config.LabHoldMB) * MB * a.Rows.Count;
+        long projected = a.Rows.Sum(r => r.WsBytes);
+        double keep = Math.Clamp(Config.LabHoldKeepPercent, 0, 100) / 100.0;
+        foreach (var r in a.Rows.OrderByDescending(r => r.WsBytes))
+        {
+            if (projected <= target) break;
+            if (LabPidProtected(r.Pid, now)) continue;
+            if (a.Ws.ContainsKey(r.Pid) || a.Fail.Contains("ws" + r.Pid)) continue;
+            long floor = Math.Max(16 * MB, (long)(r.WsBytes * keep));
+            long cap = Math.Max(floor, r.WsBytes - (projected - target));
+            if (cap >= r.WsBytes) continue;
+            if (!Native.TryGetLimits(r.Pid, out var omin, out var omax)) { a.Fail.Add("ws" + r.Pid); continue; }
+            if (Native.SetCeiling(r.Pid, cap)) { a.Ws[r.Pid] = (r.CreateTime, omin, omax); projected -= r.WsBytes - cap; }
+            else a.Fail.Add("ws" + r.Pid);
+        }
     }
 
     void LabSetPrio(LabApp a, ProcRow r, uint level)

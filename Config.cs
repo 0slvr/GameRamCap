@@ -19,7 +19,7 @@ internal sealed class Config
     // ================= LAB (experiments) =================
     /// <summary>Off = nothing runs. Otherwise one experiment only: E0 (measure only), E1 (memory priority),
     /// E2s (soft working-set limit), E2h (hard working-set limit), E5 (thread memory priority),
-    /// E6 (adaptive controller), E8 (suspend + trim, RISKY).</summary>
+    /// E6 (adaptive controller), E8 (suspend + trim, RISKY), E9 (v28-style hard hold, RISKY).</summary>
     public string Experiment { get; set; } = "Off";
     /// <summary>"Background": a visible but unfocused app (Discord on a 2nd monitor) is treated as background.
     /// "Foreground": a visible app counts as foreground and is left alone.</summary>
@@ -34,6 +34,10 @@ internal sealed class Config
     public int LabWsKeepPercent { get; set; } = 60;
     /// <summary>E2/E6: a child is "idle" when it uses less than this percent of one core.</summary>
     public int LabIdleCpuPercent { get; set; } = 3;
+    /// <summary>E9 (v28-style hard hold): MB each process of an app may keep on average (app total = this x process count).</summary>
+    public int LabHoldMB { get; set; } = 30;
+    /// <summary>E9: no process is squeezed below this percent of its current size (and never below 16 MB).</summary>
+    public int LabHoldKeepPercent { get; set; } = 15;
     /// <summary>E6: Memory\Page Reads/sec (10 s average) above this = too much hard paging, loosen.</summary>
     public int LabPageReadsLimit { get; set; } = 100;
     /// <summary>E6: hard faults per second of an audio/mic process above this = loosen that app.</summary>
