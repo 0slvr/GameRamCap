@@ -18,6 +18,47 @@ internal sealed partial class Engine
         public double QuietSecs;
         public long OrigWs, Floor;            // size when first held; lowest ceiling known to be safe
         public DateTime FloorUntil = DateTime.MinValue;
+        public bool Releasing;                // Release failed: keep the entry and retry, never forget a live cap
+    }
+
+    /// <summary>Lifts the ceiling of one process. True = nothing is left to lift (released, process gone, or the
+    /// PID now belongs to another process). False = the process is alive and still capped: the caller must KEEP it
+    /// in _limited so the release is retried.</summary>
+    bool TryRelease(int pid, Limited st)
+    {
+        Process p;
+        try { p = Process.GetProcessById(pid); } catch { return true; }   // gone
+        using (p)
+        {
+            try { if (p.StartTime != st.Start) return true; }              // reused PID: not ours
+            catch { /* cannot tell: try the release anyway */ }
+        }
+        return Native.Release(pid, st.OrigMin, st.OrigMax);
+    }
+
+    /// <summary>Releases and forgets one entry only if the release really worked; otherwise marks it for retry.</summary>
+    bool ReleaseAndForget(int pid, Limited st)
+    {
+        if (TryRelease(pid, st)) { _limited.Remove(pid); return true; }
+        if (!st.Releasing) Logger.Write($"Could not lift the ceiling of pid {pid} - will keep retrying.");
+        st.Releasing = true;
+        return false;
+    }
+
+    /// <summary>Releases (and forgets) the given processes. True only if every one of them is free now.</summary>
+    bool ReleasePids(IEnumerable<int> pids)
+    {
+        bool ok = true;
+        foreach (var pid in pids.ToList())
+            if (_limited.TryGetValue(pid, out var st) && !ReleaseAndForget(pid, st)) ok = false;
+        return ok;
+    }
+
+    /// <summary>Retries every release that failed earlier.</summary>
+    void RetryPendingReleases()
+    {
+        foreach (var (pid, st) in _limited.Where(kv => kv.Value.Releasing).ToList())
+            ReleaseAndForget(pid, st);
     }
 
 
@@ -78,6 +119,7 @@ internal sealed partial class Engine
 
     void ApplyAndAdapt()
     {
+        RetryPendingReleases();
         var alive = new HashSet<int>();
 
         foreach (var t in Config.Targets)
@@ -98,6 +140,7 @@ internal sealed partial class Engine
 
                     if (_limited.TryGetValue(pid, out var st) && st.Start == start)
                     {
+                        if (st.Releasing) continue;
                         if (t.Adaptive && !perApp) Adapt(p, t, st);
                         continue;
                     }
@@ -138,38 +181,23 @@ internal sealed partial class Engine
     }
 
     /// <summary>Lifts the limit from every running process with this name (used when it gets focus).</summary>
-    void ReleaseByName(string name)
+    bool ReleaseByName(string name)
     {
+        var pids = new List<int>();
         foreach (var p in Safe(() => Process.GetProcessesByName(name)))
         {
-            try
-            {
-                if (_limited.TryGetValue(p.Id, out var st))
-                {
-                    if (Safe(() => p.StartTime, DateTime.MinValue) == st.Start)
-                        Native.Release(p.Id, st.OrigMin, st.OrigMax);
-                    _limited.Remove(p.Id);
-                }
-            }
+            try { pids.Add(p.Id); }
             finally { p.Dispose(); }
         }
+        return ReleasePids(pids);
     }
 
     public void RestoreAll()
     {
         RestoreAllPriorities();
         if (_limited.Count == 0) return;
-        foreach (var (pid, st) in _limited)
-        {
-            // Skip reused PIDs: only restore if it is still the same process.
-            try
-            {
-                using var p = Process.GetProcessById(pid);
-                if (p.StartTime != st.Start) continue;
-                Native.Release(pid, st.OrigMin, st.OrigMax);
-            }
-            catch { /* process is gone, nothing to restore */ }
-        }
-        _limited.Clear();
+        // Only entries whose release worked (or whose process is gone) are forgotten; the rest stay and are retried.
+        foreach (var (pid, st) in _limited.ToList())
+            ReleaseAndForget(pid, st);
     }
 }

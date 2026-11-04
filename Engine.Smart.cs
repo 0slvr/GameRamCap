@@ -31,6 +31,9 @@ internal sealed partial class Engine
     DateTime _lastSmart = DateTime.MinValue;
     string _smartInfo = "Smart: starting";
     const long PageSize = 4096;
+    // Ceilings are lifted once free RAM is back this many points above the pressure threshold, for at least RecoverSecs
+    // (hysteresis, so they do not flap on/off right at the threshold).
+    const double RecoverMargin = 3, RecoverSecs = 15;
     Preset? _pCache;
     /// <summary>Resolved once per tick (the config only changes between ticks), instead of a new object per call.</summary>
     Preset P => _pCache ??= Presets.Resolve(Config);
@@ -76,12 +79,12 @@ internal sealed partial class Engine
         long projected = procs.Sum(x => x.Ws);
         long floorAbs = Math.Max(Presets.AbsMinMB, pr0.HoldFloorMB > 0 ? pr0.HoldFloorMB : Config.HoldMinProcessMB) * MB;
         double keep = Math.Clamp(pr0.HoldKeepPct > 0 ? pr0.HoldKeepPct : Config.HoldKeepPercent, 0, 100) / 100.0;
-        long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe) * MB : 0;
 
         // biggest first: the fewest processes have to be touched to reach the target
         foreach (var x in fresh.OrderByDescending(x => x.Ws))
         {
             if (projected <= target) break;                       // target reached: leave the rest alone
+            long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe, x.Ws) * MB : 0;   // per size class, not per app name
             long safe = learned > 0 ? Math.Min(learned, x.Ws) : 0;
             long floor = Math.Max(Math.Max(floorAbs, (long)(x.Ws * keep)), safe);
             long cap = Math.Max(floor, x.Ws - (projected - target));
@@ -113,10 +116,10 @@ internal sealed partial class Engine
     void LowerHeld(List<Proc> procs, Target t, Preset pr)
     {
         long floorAbs = Math.Max(Presets.AbsMinMB, pr.HoldFloorMB > 0 ? pr.HoldFloorMB : Config.HoldMinProcessMB) * MB;
-        long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe) * MB : 0;
         foreach (var x in procs)
         {
-            if (!_limited.TryGetValue(x.Pid, out var st)) continue;
+            if (!_limited.TryGetValue(x.Pid, out var st) || st.Releasing) continue;
+            long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe, st.OrigWs) * MB : 0;
             long floor = Math.Max(floorAbs, Math.Min(learned, st.Ceiling));
             long next = Math.Max(floor, (long)(st.Ceiling * pr.CritFactor));
             if (next < st.Ceiling && Native.SetCeiling(x.Pid, next)) st.Ceiling = next;
@@ -141,7 +144,7 @@ internal sealed partial class Engine
         long tmax = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
         foreach (var x in procs)
         {
-            if (!_limited.TryGetValue(x.Pid, out var st)) continue;
+            if (!_limited.TryGetValue(x.Pid, out var st) || st.Releasing) continue;
             if (!Native.GetMemory(x.Pid, out var ws, out var pf)) continue;
             if (st.LastPfAt == DateTime.MinValue) { st.LastPf = pf; st.LastPfAt = now; continue; }
             double dt = (now - st.LastPfAt).TotalSeconds;
@@ -161,7 +164,7 @@ internal sealed partial class Engine
                 if (auto)
                 {
                     st.Floor = next; st.FloorUntil = now.AddMinutes(5);
-                    if (c.LearnFloors) LearnedStore.Raise(t.Exe, (int)(next / MB));
+                    if (c.LearnFloors) LearnedStore.Raise(t.Exe, st.OrigWs, (int)(next / MB));
                 }
             }
             else if (rate < faultRate * 0.2)
@@ -198,6 +201,7 @@ internal sealed partial class Engine
         }
         if ((now - _lastSmart).TotalSeconds < Math.Max(0.5, P.Scan)) return;
         _lastSmart = now;
+        RetryPendingReleases();
         RefreshAudio(now);
         LearnedStore.Flush(false);
 
@@ -255,14 +259,8 @@ internal sealed partial class Engine
         else if (!Config.ThreadMemoryPriority && _threadPrio.Count > 0) foreach (int tp in _threadPrio.Keys.ToList()) RestoreThreads(tp);
         foreach (var pid in _limited.Keys.Where(k => !seen.Contains(k)).ToList())
         {
-            // Process exited, or is now excluded (game detected): lift the ceiling if it is still the same process.
-            try
-            {
-                using var gone = Process.GetProcessById(pid);
-                if (gone.StartTime == _limited[pid].Start) Native.Release(pid, _limited[pid].OrigMin, _limited[pid].OrigMax);
-            }
-            catch { }
-            _limited.Remove(pid);
+            // Process exited, or is now excluded (game detected): lift the ceiling; forgotten only once that worked.
+            if (_limited.TryGetValue(pid, out var gst)) ReleaseAndForget(pid, gst);
         }
 
         // 2) Decide per app.
@@ -308,10 +306,23 @@ internal sealed partial class Engine
 
             long total = procs.Sum(x => x.Ws);
 
+            // RAM is plentiful again: lift the ceilings of this app (with hysteresis). If a release fails the app
+            // stays "Holding" and it is retried on the next scan.
+            if (g.Holding && level == 0 && freePct >= 0 &&
+                freePct >= Math.Min(99, pr.Pressure + RecoverMargin) && (now - g.LastTrim).TotalSeconds >= RecoverSecs)
+            {
+                if (ReleasePids(allProcs.Select(x => x.Pid)))
+                {
+                    g.Holding = false; g.CritDone = false; g.Pending = false;
+                    Logger.Write($"RAM recovered ({freePct:0}% free) - ceilings lifted from {name}.");
+                }
+            }
+
             // Keep a background app that was already trimmed from growing back (also new child processes).
+            // New ceilings are only added while RAM is under pressure; with level 0 it only tunes what is already held.
             if (g.Holding && Config.HoldBackground)
             {
-                HoldPass(g, procs, t, level, now);
+                if (level > 0) HoldPass(g, procs, t, level, now);
                 TuneHeld(procs, t);
             }
 

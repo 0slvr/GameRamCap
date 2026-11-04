@@ -9,7 +9,7 @@ internal sealed partial class Engine : IDisposable
     const long MB = 1024 * 1024;
 
     // Never touched, even if listed as a target.
-    internal static readonly HashSet<string> Protected = new(StringComparer.OrdinalIgnoreCase)
+    internal static readonly HashSet<string> ProtectedFull = new(StringComparer.OrdinalIgnoreCase)
     {
         "System", "Idle", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "svchost",
         "dwm", "audiodg", "MsMpEng", "SecurityHealthService", "GameRamCap",
@@ -23,6 +23,13 @@ internal sealed partial class Engine : IDisposable
         // Shell + recording/streaming tools: trimming these causes lag or dropped frames.
         "explorer", "obs64", "obs32", "Streamlabs OBS", "NVIDIA Share", "nvsphelper64", "ShellHost", "SearchIndexer",
     };
+
+    // Shell helpers that may now be trimmed (they grow over time). They are still ignored for game detection
+    // and for the focus-tree walk (see ProtectedFull), so the Start menu / search never counts as a game.
+    internal static readonly string[] Relaxed = { "explorer", "TextInputHost", "StartMenuExperienceHost", "SearchHost" };
+
+    /// <summary>What the engine refuses to trim: ProtectedFull minus the Relaxed shell helpers.</summary>
+    internal static readonly HashSet<string> Protected = new(ProtectedFull.Except(Relaxed, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
 
     readonly Dictionary<int, Limited> _limited = new();
     DateTime _gamingSince = DateTime.MinValue;

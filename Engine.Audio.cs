@@ -43,14 +43,7 @@ internal sealed partial class Engine
     /// <summary>Lifts the ceiling of one process (if it still is the same process).</summary>
     void ReleasePid(int pid)
     {
-        if (!_limited.TryGetValue(pid, out var st)) return;
-        try
-        {
-            using var p = Process.GetProcessById(pid);
-            if (p.StartTime == st.Start) Native.Release(pid, st.OrigMin, st.OrigMax);
-        }
-        catch { }
-        _limited.Remove(pid);
+        if (_limited.TryGetValue(pid, out var st)) ReleaseAndForget(pid, st);
     }
 
     // ---------- memory priority ----------

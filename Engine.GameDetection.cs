@@ -64,7 +64,7 @@ internal sealed partial class Engine
 
         if (Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase)) { GameName = name; Remember((int)pid, fgStart); return true; }
         if (!Config.AutoDetectFullscreen) return false;
-        if (Protected.Contains(name)) return false;
+        if (ProtectedFull.Contains(name)) return false;
         if (Config.FullscreenIgnore.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
         if (Config.Targets.Any(t => string.Equals(t.Exe, name, StringComparison.OrdinalIgnoreCase))) return false;
 

@@ -87,6 +87,21 @@ internal static class StandbyCleaner
         catch { return false; }
     }
 
+    /// <summary>One-shot "Boost" (like RAMMap's Empty menu / PC Manager's Boost): empties the working set of every process,
+    /// writes the modified list to disk, then clears the standby list. Nothing is lost; apps re-read what they need,
+    /// so the next seconds can feel a bit slower. Needs administrator rights.</summary>
+    public static bool Boost()
+    {
+        if (!EnablePrivilege()) return false;
+        bool any = false;
+        foreach (int cmd in new[] { 2 /* MemoryEmptyWorkingSets */, 3 /* MemoryFlushModifiedList */, 4 /* MemoryPurgeStandbyList */ })
+        {
+            int c = cmd;
+            try { any |= NtSetSystemInformation(SystemMemoryListInformation, ref c, sizeof(int)) == 0; } catch { }
+        }
+        return any;
+    }
+
     public static void Close() { _q?.Dispose(); _q = null; _counterFailed = false; }
 }
 

@@ -107,6 +107,14 @@ sealed class TrayContext : ApplicationContext
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_enabledItem);
+        var boostItem = new ToolStripMenuItem("Boost now (free RAM)");
+        boostItem.Click += (_, _) => Task.Run(() =>
+        {
+            bool ok = StandbyCleaner.Boost();
+            Logger.Write(ok ? "Boost: emptied working sets and cleared the modified/standby lists." : "Boost: Windows refused (run GameRamCap as administrator).");
+            _balloons.Enqueue(("GameRamCap", ok ? "Boost done. Memory was freed." : "Boost failed. Run GameRamCap as administrator."));
+        });
+        menu.Items.Add(boostItem);
         // Mode is the main choice; the intensity levels live inside Smart.
         _intensityMenu = new ToolStripMenuItem("Mode");
         _smartItem = new ToolStripMenuItem("Smart") { Tag = SmartTag };

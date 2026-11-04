@@ -37,7 +37,7 @@ internal sealed partial class Engine
         if (!Config.AutoDetectFullscreen) { _gameNames.Clear(); return; }
 
         if (fg.Length > 0 && !_gameNames.Contains(fg)
-            && !Protected.Contains(fg) && !IsException(fg)
+            && !ProtectedFull.Contains(fg) && !IsException(fg)
             && !Config.FullscreenIgnore.Contains(fg, StringComparer.OrdinalIgnoreCase)
             && !Config.Targets.Any(t => string.Equals(t.Exe, fg, StringComparison.OrdinalIgnoreCase)))
         {
@@ -107,7 +107,7 @@ internal sealed partial class Engine
             for (int i = 0; i < 6; i++)
             {
                 if (!map.TryGetValue(cur, out var me) || !map.TryGetValue(me.Parent, out var par)) break;
-                if (me.Parent == cur || Protected.Contains(par.Name)) break;
+                if (me.Parent == cur || ProtectedFull.Contains(par.Name)) break;
                 set.Add(par.Name);
                 cur = me.Parent;
             }
