@@ -1,138 +1,183 @@
 # GameRamCap
 
-Tray app for Windows 10/11. While a game is in the foreground, it puts a **hard ceiling on the resident RAM (working set)** of background apps you list (Discord, Claude, Steam, Spotify by default). When you leave the game, every original limit is restored.
+**Give your game more RAM. Automatically.**
 
-It does not clean memory periodically. It uses the documented `SetProcessWorkingSetSizeEx` API with the hard-max flag, per process.
+GameRamCap is a small tray app for Windows 10/11. While you play, it keeps background apps (Discord, Chrome, Steam, Spotify...) from hogging your memory, so your game has more RAM and runs smoother. When you go back to an app, its limit is lifted at once.
 
-## Modes
+Nothing is closed, nothing is deleted. The limits only affect how much RAM background apps may keep in memory, and every one of them is released when you leave the game or exit GameRamCap.
 
-**Smart (default)** - no hard caps, so nothing can be starved or crash:
+## Quick start
 
-- By default (`LimitWhenRamFree: false`) it acts only when free RAM drops below `PressureFreePercent` (25%). Set it to `true` to keep background apps in budget all the time (more aggressive, more page faults).
-- Fullscreen/borderless apps seen in front are remembered as games and are never trimmed or capped while they run, even after Alt+Tab.
-- Apps that refused a trim are retried every 5 minutes instead of being ignored for the whole session.
-- `explorer` and recording tools (OBS, NVIDIA Share) are protected by default.
-- Under pressure, trims background apps softly (pages move to the standby list; the app takes them back instantly if needed, no disk).
-- The budget is per **app** (all its processes together). It is `BudgetMB`, or `MaxCeilingMB` when 0.
-- Never touches the focused app, an app you left in the last `GraceAfterFocusSeconds`, busy processes, or `Games`.
-- Learns: if an app pulls its pages back right away, its budget grows and the cooldown doubles; when it stays quiet, the budget returns to normal.
-- `HoldBackground` (default `true`): after a background app is trimmed it also gets a hard ceiling (its `CeilingMB` per process) so it cannot grow back; focusing the app lifts the ceiling at once. Set `false` for pure soft trimming.
-- Below `CriticalFreePercent` (10%) trimming is stronger (budget halved, down to `MinCeilingMB`).
+1. Download `GameRamCap.exe` from the [Releases](../../releases) page and run it. (Windows asks for administrator rights; it needs them to limit other apps.)
+2. A tray icon appears. That's it: start a game and GameRamCap does the rest.
+3. Double-click the tray icon any time to open the window.
 
-**Hard** - fixed hard ceilings. Set `"Mode": "Hard"`. `HardScope` chooses how the limit applies:
+Optional: right-click the tray icon > **Start with Windows**.
 
-- `"Process"` (**recommended**, default): every process of an app gets the limit separately.
-- `"App"`: the limit is the total for the app and is split equally between its running processes (min 16 MB each, fixed, not adapted).
+## What you see in the window
 
-## Choosing the mode (tray menu)
+| Tab | What it is for |
+|---|---|
+| **Main** | On/off switch, the **intensity slider**, and the few settings that matter. |
+| **Apps** | Every running app with its RAM, CPU, GPU and disk use. Pick which apps to limit, set exceptions, and use the right-click tools (below). |
+| **Games and lists** | Tell GameRamCap which programs are games, and which apps must never be limited. |
+| **Settings** | Mode, when limits apply, game detection, and maintenance. |
 
-Right-click the tray icon:
+### Intensity: how hard should it squeeze?
 
-- **Enabled**, **Mode** (Smart with levels Ultra Performance ... Ultra Safe, or Hard per process / per app), **Settings...** (opens the window), **Start with Windows**, **Open log file**, **Exit**. The Custom level, the editors for levels and per-app limits live in the window.
+Move the slider on the Main tab.
 
-Starting a second copy of the app opens the window of the running one.
-- Mode (Smart / Hard) and all the option toggles are in the window, tab **Settings**.
+| Level | What to expect |
+|---|---|
+| **Ultra Safe** | Very gentle. Nothing should feel different. |
+| **Safe** | Gentle. Background apps keep a comfortable amount of RAM. |
+| **Balanced** | A good middle, and a good start. |
+| **Performance** | Strong. Frees a lot of RAM; an app you switch back to may need a moment to wake up. |
+| **Ultra Performance** | Frees the most RAM. Background apps are kept very small and may feel slow when you return to them. |
+| **Custom** | Your own numbers (ceiling per process, check interval, grace, cooldown). Use *Start from a level* to begin from a preset. |
 
-**Intensity** is a slider on the Main tab (Ultra Safe ... Ultra Performance, then Custom). The values of each level can still be overridden by hand in config.json (`PresetOverrides`); only the values you change are stored.
+Not sure? Use **Balanced**.
 
-Every choice is saved to `config.json` and applied immediately (limits are released and re-applied with the new mode).
+### Smart or Hard mode
 
-## More tools
+- **Smart (default):** adapts to your PC. It acts when free RAM gets low, learns which apps struggle when squeezed and gives them room back, and never starves anything.
+- **Hard:** fixed RAM ceilings you set yourself per app (Apps tab), applied per process or per app.
 
-- **Apps tab**: *Process tree...*, a GPU column, right-click *Check on VirusTotal* (only the SHA-256 is sent as part of the page address; the file is never uploaded).
-- **Game profile extras** (Settings > Game detection, all off by default): pause Windows Update while a game runs (restored afterwards, also after a crash) and clear the standby list when free RAM is low during a game (at most once per interval).
+Switch in Settings or from the tray menu (**Mode**).
 
-## Build
+### Right-click tools on the Apps tab
+
+- **Priority** and **CPU cores**: for this run only, or remembered every time the app starts.
+- **Freeze / Resume**: pause an app completely (no CPU, nothing lost) and bring it back later.
+- **Process tree**: see parent and child processes (for example Chrome and all its helpers) with RAM per branch.
+- **History**: RAM and CPU of every app over the last hour, to spot an app that keeps growing.
+- **Connections**: the network connections an app has open.
+- **Check on VirusTotal**: opens the VirusTotal page for the app's file. Only the file's SHA-256 hash is used; the file is never uploaded.
+- **End task**, **Start new task**, **Open file location**.
+
+### Extras while a game runs (off by default, Settings > Game detection)
+
+- **Pause Windows Update** so it does not download or install in the middle of a game. It is put back exactly as it was afterwards, even after a crash.
+- **Clear the standby list** when free RAM is low (at most once every couple of minutes). It only drops cached data; no app is changed.
+
+## Is it safe?
+
+- **The app you are using, your game, Windows system processes, security services and common anti-cheat services are never touched.**
+- Apps that are playing sound are protected, and recording tools (OBS, NVIDIA Share) are protected by default.
+- Add anything that must keep all its RAM (virtual machines, editors...) to **Exceptions**.
+- Exiting from the tray restores everything. If GameRamCap is killed (End Task) or crashes, a hidden watchdog copy lifts leftover limits, resumes frozen apps and restores Windows Update. The next start also cleans up.
+- A very low ceiling makes apps slower to come back (Discord voice can crackle). Start with **Balanced**.
+- Do not add your game as a limited app.
+
+## Files and privacy
+
+Everything is stored in `%APPDATA%\GameRamCap\`:
+
+- `config.json`: your settings (saving the file reloads it; a broken file is backed up and the last good one is restored).
+- `log.txt`: limits applied/released, detected games and errors (rotates at 512 KB). It does not log which windows you switch between.
+- `learned.json`, `suspended.json`, `winupdate.json`: remembered safe limits and recovery information.
+
+Nothing is sent anywhere. The only network feature is the VirusTotal button, which opens a web page in your browser.
+
+## Build from source
 
 Requires the .NET 8 SDK.
 
     dotnet build -c Release
     dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
 
-## Use
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
-1. Run `GameRamCap.exe`. A tray icon appears (right-click for the menu above).
-2. Edit `%APPDATA%\GameRamCap\config.json` (created on first run; Settings > advanced options opens it). Saving the file reloads it automatically. If the file is broken, a copy is kept as `config.broken-<date>.json` and the last good config (`config.lastgood.json`) is used.
+---
+
+# Reference (advanced)
+
+Everything below is for people who edit `config.json` or want to know exactly what the engine does.
+
+## How it works
+
+GameRamCap uses the documented `SetProcessWorkingSetSizeEx` API (with the hard-max flag in Hard mode) to limit the resident RAM (working set) of background processes. It does not clean memory periodically.
+
+### Smart mode
+
+No blanket hard caps, so nothing can be starved or crash:
+
+- With `LimitWhenRamFree: true` it acts only when free RAM drops below the level's pressure % (Ultra Performance 60% ... Ultra Safe 12%). With `false` it keeps background apps in budget all the time.
+- Fullscreen/borderless apps seen in front are remembered as games and are never trimmed or capped while they run, even after Alt+Tab.
+- Apps that refused a trim are retried every 5 minutes.
+- Under pressure it trims background apps softly (pages move to the standby list; the app takes them back instantly if needed, no disk).
+- The budget is per **app** (all its processes together): `BudgetMB`, or `MaxCeilingMB` when 0.
+- It never touches the focused app (including its whole process tree; UWP apps resolve to the real app), an app you left in the last `GraceAfterFocusSeconds`, busy processes, or `Games`.
+- Learning: if an app pulls its pages back right away, its budget grows and the cooldown doubles; when it stays quiet, the budget returns to normal.
+- `HoldBackground` (default `true`): after a background app is trimmed it also gets a hard ceiling per process so it cannot grow back; focusing the app lifts the ceiling at once. `false` = pure soft trimming.
+- Below `CriticalFreePercent` trimming is stronger.
+
+### Hard mode
+
+Fixed hard ceilings. Set `"Mode": "Hard"`. `HardScope`:
+
+- `"Process"` (recommended, default): every process of an app gets the limit separately.
+- `"App"`: the limit is the total for the app, split equally between its running processes (min 16 MB each, fixed, not adapted).
+
+### Intensity levels
+
+All levels act at all times (unless `LimitWhenRamFree` is on). The hard ceiling is **per process** (app total = ceiling x number of processes, split by what each process uses). No process is squeezed below its floor or keep %, so apps do not stutter. Held processes also **adapt**: one that sits at its ceiling and keeps page-faulting gets +25% (up to `MaxCeilingMB`) and slides back after 30 quiet seconds.
+
+| Level | Interval | Ceiling / process | Floor | Keep % | Pressure % |
+|---|---|---|---|---|---|
+| Ultra Performance | 1 s | 8 MB | 8 MB | 1% | 60 |
+| Performance | 2 s | 20 MB | 12 MB | 8% | 45 |
+| Balanced | 3 s | 30 MB | 16 MB | 15% | 30 |
+| Safe | 4 s | 40 MB | 24 MB | 25% | 20 |
+| Ultra Safe | 5 s | 90 MB | 48 MB | 50% | 12 |
+
+Per-level values can be overridden by hand in `config.json` (`PresetOverrides`); only the values you change are stored.
+
+**Custom** (last stop of the slider) is a level with your own numbers (`CustomLevel` in `config.json`): ceiling per process (down to 2 MB; below 8 MB some apps may stutter), check interval, grace, cooldown, plus budget scale / min process / critical factor / floor / keep % under "More numbers". It starts as a copy of Balanced and runs through the same engine path as the five levels.
+
+Level fields: *Cooldown* = minimum seconds between two cap passes of an app; *Budget scale* multiplies the app target (ceiling x process count); *Min process* leaves smaller processes alone; *Critical factor* multiplies the target and lowers existing ceilings once when free RAM is below the critical %.
+
+### Auto-squeeze (default on)
+
+Finds the lowest RAM each background process can live on **without stutter**. Every held process is probed: quiet for `AutoProbeSeconds` (10 s) -> ceiling lowered one step (10%, or straight to its real use + 25% if the ceiling is not binding), down to `AutoMinProcessMB` (16). At its ceiling and page-faulting more than `AutoFaultRate` (150/s) -> ceiling raised 25% and that level is kept as a floor for 5 minutes, then probed again. It never grows past what the process used before it was held (+20%). Focusing an app lifts its ceiling at once.
+
+### Smarter limiting (Smart mode)
+
+- **Audio protection** (`AudioProtect`, default on): only the **process** that owns an active audio stream is left alone, plus `AudioProtectGraceSeconds` (8) after the sound stops. Other processes of the same app are limited as usual.
+- **Low memory priority** (`LowerMemoryPriority`, default on; `BackgroundMemoryPriority` 1-4, default 2): background apps get a lower Windows memory priority; when RAM is short Windows takes their pages first. Focusing the app restores it at once. After End Task on GameRamCap the low priority stays until those apps restart.
+- **Thread memory priority** (`ThreadMemoryPriority`, default off, experimental): also applies the low priority to threads of background apps; needs `LowerMemoryPriority`.
+- **Biggest first**: for each background app the target is `ceiling x process count`; the biggest processes are squeezed first, only as far as needed. Stutter is detected from page faults, not CPU use.
+- **Remembered safe limits** (`LearnFloors`, default on): when auto-squeeze finds a process starts page-faulting at some level, it is saved per app in `learned.json` and used as the floor next time (expires after 14 days). Settings > **Forget learned limits** clears it.
+
+## Settings (`config.json`)
+
+Edit `%APPDATA%\GameRamCap\config.json` (created on first run).
 
 | Setting | Meaning |
 |---|---|
+| `Mode`, `Profile` | `Smart` / `Hard`; the intensity level (`UltraSafe`, `Safe`, `Balanced`, `Performance`, `UltraPerformance`, `Custom`). |
 | `LimitEverything` | **On by default.** Every app and game gets a ceiling (values from `Default*`; apps in `Targets` keep their own numbers), except the one in focus, protected system processes and `Exceptions`. |
-| `Exceptions` | Process names that are never limited. Easiest: Settings > **Games & lists** > Exceptions (OBS, VMs, anything that must keep all its RAM). |
-| `FocusMode` | **Always on (not shown in the UI).** Works for any app in `Targets`, no game needed: the app you are using (foreground window) is unlimited; every other target is capped. Click elsewhere and its cap returns. |
-| `RelimitDelaySeconds` | Delay before the cap returns after you leave an app (default 1.5s, avoids flicker on Alt+Tab). |
-| `Targets[].FocusAlso` | Extra process names that count as focusing that app (steamwebhelper already maps to `steam`). |
+| `Exceptions` | Process names that are never limited. Easiest: Games and lists tab > Exceptions. |
+| `FocusMode` | Always on. The app you are using is unlimited; every other target is capped. Click elsewhere and its cap returns. |
+| `RelimitDelaySeconds` | Delay before the cap returns after you leave an app (default 1.5 s, avoids flicker on Alt+Tab). |
+| `Targets[].FocusAlso` | Extra process names that count as focusing that app (`steamwebhelper` already maps to `steam`). |
 | `Games` | Process names (no `.exe`) that always count as a game. Find them in Task Manager > Details. |
 | `AutoDetectFullscreen` | Any borderless/fullscreen foreground window counts as a game. |
 | `FullscreenIgnore` | Fullscreen apps that are not games (browsers, video players). |
 | `DelaySeconds` | How long the game must stay in front before limits apply. |
-| `Targets[].CeilingMB` | Starting ceiling for that app, applied to **each process** of the app separately (in Hard mode and Custom). You choose apps; the limit is per process. |
+| `AlwaysLimit` | Off = limits apply only while a game runs. |
+| `KeepLimitsWhileGameRuns` | Keep limits after Alt+Tab until the game exits. |
+| `SoftTrim` | An app over its budget first gets idle processes trimmed, then the hard cap follows. |
+| `Targets[].CeilingMB` | Starting ceiling for that app, applied to **each process** (Hard mode and rows ticked *Own limit*). |
 | `Targets[].Adaptive` | Ceiling grows when the app is busy at its limit and shrinks when idle, between `MinCeilingMB` and `MaxCeilingMB`. |
+| `Targets[].UseOwnLimit` | *Own limit* (Apps tab): this row uses its own Limit/Min/Max/Adaptive instead of the level. In Smart mode the per-app numbers are ignored otherwise. |
+| `Rules` | Saved priority / CPU-core rules (Apps tab, right-click). |
+| `CustomLevel` | The numbers of the Custom level. |
+| `PauseWindowsUpdate` | Pause Windows Update while a game runs (restored afterwards). |
+| `StandbyClean`, `StandbyFreeBelowMB` (1024), `StandbyMinMB` (1024), `StandbyMinIntervalSeconds` (120) | Standby list cleaner: acts only while a game runs, when FREE RAM (not counting the standby cache) is below `StandbyFreeBelowMB` and the standby list is at least `StandbyMinMB`; at most once per interval. |
 
-## Safety
+## Notes
 
-- System processes, security services and common anti-cheat services are never touched (hard-coded list in `Engine.cs`).
-- Do not list your game as a target.
-- Hard limits live in the target process. Exit from the tray restores them. **End Task** cannot be caught by the app, so a hidden watchdog copy (`GameRamCap.exe --watchdog <pid>`, started detached) waits for the main app to die and then lifts every leftover ceiling. A crashed run is also cleaned up at the next start.
-- Too low a ceiling makes apps page heavily (Discord voice can crackle). Keep `Adaptive` on and start with the defaults.
-- Some elevated processes can only be limited if GameRamCap runs as Administrator.
-
-## Upload to GitHub (button in Visual Studio)
-
-In the Start dropdown (next to the green arrow) choose **Upload to GitHub**, then press **Ctrl+F5**.
-It checks the git state, asks for a commit message, commits and pushes. On the first run it can create the GitHub repo for you.
-
-For fully automatic auth set a token once: `setx GH_TOKEN "ghp_xxx"` and restart Visual Studio
-(fine-grained token, Contents: Read and write; also Administration: write if it should create the repo).
-Without a token, git's normal sign-in (Git Credential Manager) is used instead.
-
-## Intensity levels (Smart mode + `HoldBackground`)
-
-All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ultra Safe). The hard RAM ceiling is **per process** (the app total is this x its number of processes, split by what each process uses). No process is squeezed below `HoldMinProcessMB` (64) or `HoldKeepPercent` (60%) of its current size, so apps do not stutter. The floor depends on the level (Ultra Performance 8 MB / 1% ... Ultra Safe 48 MB / 50%; Custom uses config.json). Held processes also **adapt**: one that sits at its ceiling and keeps page-faulting gets +25% (up to `MaxCeilingMB`), and slides back after 30 quiet seconds:
-
-| Level | Interval | Ceiling / process | Meaning |
-|---|---|---|---|
-| Ultra Performance | 1 s | 8 MB | lowest possible |
-| Performance | 2 s | 20 MB | very low |
-| Balanced | 3 s | 30 MB | low, still tuned by auto-squeeze |
-| Safe | 4 s | 40 MB | more room |
-| Ultra Safe | 5 s | 90 MB | most room |
-
-`Custom` (the last stop of the slider on the Main tab) is a level with your own numbers (`CustomLevel` in config.json): ceiling per process (down to 2 MB), check interval, grace, cooldown, plus budget scale / min process / critical factor / floor / keep % under "More numbers". It starts as a copy of Balanced and runs through the same engine path as the five levels. **The per-app numbers (Apps tab) are used only in Hard mode and for rows ticked "Own limit"**; in Smart mode they are ignored.
-
-All columns of the level table work in hold mode: *Cooldown* = minimum seconds between two cap passes of an app, *Budget scale* multiplies the app target (ceiling x process count), *Min process* leaves smaller processes alone, *Critical factor* multiplies the target and lowers existing ceilings once when free RAM is below the level's critical %. **Only limit when RAM is low** (`LimitWhenRamFree: false`) makes every level wait until free RAM is below its pressure % (Ultra Performance 60% ... Ultra Safe 12%).
-
-## Auto-squeeze (default on)
-
-Goal: the lowest RAM each background process can live on **without stutter**. On top of the level's starting ceiling,
-every held process is probed: quiet for `AutoProbeSeconds` (10 s) -> ceiling lowered one step (10%, or straight to
-its real use + 25% if the ceiling is not binding), down to `AutoMinProcessMB` (16). At its ceiling and page-faulting
-more than `AutoFaultRate` (150/s) -> ceiling raised 25% and that level is kept as a floor for 5 minutes, then probed again.
-It never grows past what the process used before it was held (+20%). Toggle: Settings > Auto-squeeze.
-Focusing an app lifts its ceiling at once (the first moments after returning to it reload pages, that is unavoidable).
-
-## Smarter limiting (Smart mode)
-
-- **Audio protection** (`AudioProtect`, default on; Settings > Basics): only the single **process** that owns an active audio stream (the audio service of Discord/Chrome, the player of Spotify) is left alone, plus `AudioProtectGraceSeconds` (8) after the sound stops. The other processes of the same app are limited as usual, so apps that play sound are not exempt as a whole. Detected through the Windows audio sessions.
-- **Low memory priority** (`LowerMemoryPriority`, default on; `BackgroundMemoryPriority` 1-4, default 2): background apps get a lower Windows memory priority. Nothing is capped; when RAM is short Windows takes their pages first. Focusing the app gives its original priority back at once. An app that already set an equal or lower priority itself is left alone. After End Task on GameRamCap the low priority stays on those apps until they restart; it only matters when RAM is short.
-- **Biggest first**: for each background app the target is `HoldMB x process count`. The biggest processes are squeezed first, each only as far as needed, and squeezing stops as soon as the target is reached. CPU use plays no part; stutter is detected from page faults (auto-squeeze).
-- **Remembered safe limits** (`LearnFloors`, default on): when auto-squeeze finds that a process starts page-faulting at a level, that level is saved per app in `%APPDATA%\GameRamCap\learned.json` and used as the floor next time (entries expire after 14 days). It is a separate file because saving `config.json` makes the app reload. Settings > **Forget learned limits** clears it.
-
-## One window
-
-Double-click the tray icon: tabs **Main** and **Advanced** (Advanced holds the Apps and Settings pages). Closing the window only hides it.
-
-- **Thread memory priority** (`ThreadMemoryPriority`, default off; Settings > advanced options): besides the process, the threads of background apps also get the low memory priority (`BackgroundMemoryPriority`). Processes that own an active audio stream are never touched. Experimental; needs `LowerMemoryPriority`.
-- The separate SmartRam Lab (second engine, baseline/metrics tab) was removed; its useful parts are options of the main engine now.
-- The app runs as Administrator (`app.manifest`) because the tools and some processes need it.
-
-
-## Notes on some settings (see CHANGELOG.md for release history)
-
-- **Limit all the time** (`AlwaysLimit`): turn it off and limits apply only while a game runs. A game must stay in front for `DelaySeconds`; **Keep limits while the game runs** keeps them after Alt+Tab until the game exits. Games = your `Games` list or auto-detected fullscreen apps.
-- **Gentle trim before capping** (`SoftTrim`, five levels): an app over its budget first gets its idle processes trimmed, then the hard cap follows. Cooldown, the budget feedback loop and the Busy CPU limits of the level table now take effect. Busy apps are still capped when Hold is on.
-- **Own limit** (Apps tab, `UseOwnLimit`): with the five levels, a ticked app uses its own Limit/Min/Max/Adaptive instead of the level. Custom always uses them.
-- **Adaptive** per app now switches auto-squeeze off for that app (Custom and own-limit rows).
-
-## Logs and privacy
-
-`%APPDATA%\GameRamCap\log.txt` records limits applied/released, detected games and errors. It rotates to `log.txt.old` at 512 KB. The app does not log which windows you switch between.
+- The app runs as Administrator (`app.manifest`); some processes can only be limited that way, and the standby cleaner and Windows Update pause need it.
+- The window is hidden, not closed, when you press X. A second copy of the app opens the window of the running one.
+- A hidden watchdog (`GameRamCap.exe --watchdog <pid>`, started detached) waits for the main app to die and then lifts every leftover ceiling, resumes frozen apps and restores Windows Update.
