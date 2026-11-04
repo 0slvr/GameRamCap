@@ -11,8 +11,8 @@ internal sealed class ExceptionsForm : Form
     {
         View = View.Details, FullRowSelect = true, MultiSelect = true, HideSelection = false, Dock = DockStyle.Fill,
     };
-    readonly TextBox _search = new() { Dock = DockStyle.Fill, PlaceholderText = "Search running apps..." };
-    readonly TextBox _manual = new() { Width = 150, PlaceholderText = "app name (no .exe)" };
+    readonly ModernTextBox _search = new() { Dock = DockStyle.Fill, PlaceholderText = "Search running apps..." };
+    readonly ModernTextBox _manual = new() { Width = 150, PlaceholderText = "app name (no .exe)", Margin = new Padding(3, 7, 3, 3) };
 
     public ExceptionsForm(Config cfg)
     {

@@ -1,21 +1,17 @@
 namespace GameRamCap;
 
-/// <summary>One window. Two tabs: Main (status and the few switches that matter) and Advanced
-/// (Apps, Mode, General, Games &amp; lists, Tools, Intensity levels in one row of sub-tabs).
+/// <summary>One window, one row of tabs: Main (status and the few switches that matter), Apps, Settings
+/// (one scrolling page of cards). The Intensity levels table opens on demand from the Main tab.
 /// Closing the window only hides it; the tray icon keeps running.</summary>
 internal sealed class MainWindow : Form
 {
     // Logical places other code can ask for.
-    public const int TabHome = 0, TabApps = 1, TabSettings = 2, TabAdvanced = 3;   // TabAdvanced = Intensity levels
-    public const int AdvLevels = 0;
+    public const int TabHome = 0, TabApps = 1, TabSettings = 2;
 
-    readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
-    readonly TabControl _adv = new() { Dock = DockStyle.Fill };
-    readonly TabPage _homePage = new("Main"), _advancedPage = new("Advanced");
-    readonly TabPage _appsPage = new("Apps"), _levelsPage = new("Intensity levels");
-    readonly TabPage _firstSettingsPage;
+    readonly ModernTabs _tabs = new(false) { Dock = DockStyle.Fill };
+    readonly TabPage _homePage = new("Main"), _appsPage = new("Apps");
+    readonly TabPage _settingsPage, _listsPage;
     readonly TargetsForm _targets = new();
-    readonly IntensityForm _levels = new();
     bool _exiting;
 
     public MainWindow(Control home, SettingsPanel settings)
@@ -31,42 +27,27 @@ internal sealed class MainWindow : Form
         _homePage.Controls.Add(home);
 
         Embed(_appsPage, _targets);
-        Embed(_levelsPage, _levels);
-        _adv.TabPages.Add(_appsPage);
-        foreach (var p in settings.Pages) _adv.TabPages.Add(p);   // Mode, General, Games & lists, Tools
-        _firstSettingsPage = settings.Pages[0];
-        _adv.TabPages.Add(_levelsPage);
-        _advancedPage.Controls.Add(_adv);
+        _settingsPage = settings.Pages[0];   // one scrolling page: Mode, General, Games & lists
 
-        _tabs.TabPages.AddRange(new[] { _homePage, _advancedPage });
+        _listsPage = settings.Pages[1];      // Games & lists: its own tab
+        _tabs.TabPages.AddRange(new[] { _homePage, _appsPage, _listsPage, _settingsPage });
         Controls.Add(_tabs);
         Ui.Polish(this);
         _tabs.SelectedIndexChanged += (_, _) => RefreshCustomState();
-        _adv.SelectedIndexChanged += (_, _) => RefreshCustomState();
         RefreshCustomState();
     }
 
-    /// <summary>Apps numbers only matter with Custom / Hard; the Intensity levels sub-tab only exists in Smart mode.</summary>
-    public void RefreshCustomState()
-    {
-        _targets.RefreshCustomState();
-        bool smart = ConfigStore.Load().IsSmart();
-        bool shown = _adv.TabPages.Contains(_levelsPage);
-        if (smart && !shown) _adv.TabPages.Add(_levelsPage);
-        else if (!smart && shown) _adv.TabPages.Remove(_levelsPage);
-    }
+    /// <summary>Apps numbers only matter in Hard mode / own-limit rows.</summary>
+    public void RefreshCustomState() => _targets.RefreshCustomState();
 
-    public void SelectTab(int place, int inner = 0)
+    public void SelectTab(int place)
     {
-        if (place == TabHome) { _tabs.SelectedTab = _homePage; return; }
-        _tabs.SelectedTab = _advancedPage;
-        var target = place switch
+        _tabs.SelectedTab = place switch
         {
+            TabHome => _homePage,
             TabApps => _appsPage,
-            TabAdvanced => _adv.TabPages.Contains(_levelsPage) ? _levelsPage : _appsPage,
-            _ => _firstSettingsPage,
+            _ => _settingsPage,
         };
-        _adv.SelectedTab = target;
     }
 
     /// <summary>Embeds a form as the content of a tab. Its own Close button just returns to the Main tab.</summary>

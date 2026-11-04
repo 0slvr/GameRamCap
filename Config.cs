@@ -31,12 +31,19 @@ internal sealed class PresetOverride
     public double? BudgetScale { get; set; }
     public int? MinProcMB { get; set; }
     public double? CritFactor { get; set; }
+    /// <summary>Custom level only: no process of a held app is squeezed below this many MB.</summary>
+    public int? FloorMB { get; set; }
+    /// <summary>Custom level only: nor below this percent of its current size.</summary>
+    public int? KeepPct { get; set; }
 }
 
 internal sealed class Config
 {
     /// <summary>Edits of the five intensity levels, keyed by level name (UltraPerformance ... UltraSafe).</summary>
     public Dictionary<string, PresetOverride> PresetOverrides { get; set; } = new();
+    /// <summary>The numbers of the Custom level (the last stop of the intensity slider on the Main tab).
+    /// A null field means "use the Balanced value". Custom runs through the same engine path as the five levels.</summary>
+    public PresetOverride CustomLevel { get; set; } = new();
     public bool Enabled { get; set; } = true;
     /// <summary>"Smart" (default): no hard caps. Background apps are trimmed gently, only when Windows is short on RAM,
     /// per app (all its processes together), and the budget adapts if the app fights back.
@@ -57,7 +64,7 @@ internal sealed class Config
     /// <summary>Smart mode: an app you just left is not touched for this many seconds (quick Alt+Tab back is instant).</summary>
     public double GraceAfterFocusSeconds { get; set; } = 5;
     /// <summary>Smart mode intensity: UltraPerformance, Performance, Balanced, Safe, UltraSafe, or Custom.
-    /// The five levels use their own table (Intensity levels tab). Custom uses the individual numbers above AND
+    /// The five levels use their own built-in table (Presets.cs; per-level overrides via PresetOverrides). Custom uses the individual numbers above AND
     /// the per-app Limit/Min/Max (Targets) and the "apps not in the list" limit (Default*) from the Apps tab;
     /// those app numbers are ignored with the five levels.</summary>
     public string Profile { get; set; } = "Balanced";
@@ -139,6 +146,19 @@ internal sealed class Config
     /// <summary>Fullscreen apps that are NOT games (video players, browsers...).</summary>
     public List<string> FullscreenIgnore { get; set; } = new()
         { "chrome", "msedge", "firefox", "brave", "opera", "vlc", "explorer" };
+    /// <summary>Saved CPU rules (Apps tab, right-click): every time one of these apps runs it gets this priority
+    /// and/or these CPU cores. Independent of the RAM limits above.</summary>
+    public List<ProcessRule> Rules { get; set; } = new();
+    /// <summary>While a game runs, Windows Update (wuauserv) is stopped and disabled; put back exactly as it was afterwards.</summary>
+    public bool PauseWindowsUpdate { get; set; } = false;
+    /// <summary>While a game runs and FREE RAM is low, clear the Windows standby list (at most once per interval).</summary>
+    public bool StandbyClean { get; set; } = false;
+    /// <summary>Standby cleaner: act only when free RAM (free + zeroed pages, not the standby cache) is below this many MB...</summary>
+    public int StandbyFreeBelowMB { get; set; } = 1024;
+    /// <summary>...and the standby list holds at least this many MB.</summary>
+    public int StandbyMinMB { get; set; } = 1024;
+    /// <summary>Standby cleaner: minimum seconds between two cleanings.</summary>
+    public int StandbyMinIntervalSeconds { get; set; } = 120;
     public List<Target> Targets { get; set; } = new()
     {
         new Target { Exe = "Discord", CeilingMB = 250, MinCeilingMB = 100, MaxCeilingMB = 700 },

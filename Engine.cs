@@ -43,7 +43,18 @@ internal sealed partial class Engine : IDisposable
 
     /// <summary>One engine pass. Focus mode is always on (forced in ConfigStore), so every pass goes through TickFocus,
     /// which handles the game gate (AlwaysLimit / DelaySeconds / KeepLimitsWhileGameRuns) and both Smart and Hard mode.</summary>
-    public void Tick() { lock (Gate) { _pCache = null; TickFocus(); } }
+    public void Tick()
+    {
+        lock (Gate)
+        {
+            _pCache = null;
+            TickFocus();
+            TickProfile();
+            TickStandby();
+            try { UsageMonitor.Update(Config); } catch (Exception ex) { Logger.Write("Usage monitor: " + ex.Message); }
+            if (Enabled && Config.Enabled) ProcessRules.Apply(Config);   // saved priority / CPU-core rules (throttled inside)
+        }
+    }
 
     /// <summary>Tick runs on a background thread; anything on the UI thread that touches engine state
     /// (RestoreAll, Dispose, config swap) must take this lock first.</summary>
@@ -52,5 +63,5 @@ internal sealed partial class Engine : IDisposable
     static T[] Safe<T>(Func<T[]> f) { try { return f(); } catch { return Array.Empty<T>(); } }
     static T Safe<T>(Func<T> f, T fallback) { try { return f(); } catch { return fallback; } }
 
-    public void Dispose() { RestoreAll(); LearnedStore.Flush(true); }
+    public void Dispose() { RestoreAll(); Suspender.ResumeAll(); WindowsUpdatePause.Restore(); StandbyCleaner.Close(); LearnedStore.Flush(true); }
 }

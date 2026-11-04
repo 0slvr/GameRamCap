@@ -24,14 +24,18 @@ internal static class Presets
     public static readonly string[] Labels = { "Ultra Performance", "Performance", "Balanced", "Safe", "Ultra Safe" };
 
     public const string CustomName = "Custom";
-    /// <summary>The five levels + Custom (used by the tray menu and the Settings dropdown).</summary>
-    public static readonly string[] AllNames  = Names.Append(CustomName).ToArray();
-    public static readonly string[] AllLabels = Labels.Append(CustomName).ToArray();
 
-    /// <summary>True when the config uses the Custom level. Only then the per-app Limit/Min/Max numbers and the
-    /// "apps not in the list" limit (Apps tab) have an effect in Smart mode.</summary>
-    public static bool IsCustom(Config c) =>
+    /// <summary>Smallest ceiling (MB) the engine will ever set on a process. Windows itself will not go below 2 MB.</summary>
+    public const int AbsMinMB = 2;
+
+    /// <summary>True when the Custom level is selected (the slider's last stop).</summary>
+    public static bool IsCustomLevel(Config c) =>
         string.Equals((c.Profile ?? "").Replace(" ", "").Replace("-", "").Replace("_", ""), CustomName, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The OLD per-app Custom mode (own numbers per app on the Apps tab) is gone: Custom is now a level of its own
+    /// that goes through the same engine path as the five levels, so this is always false. Per-app numbers still work in
+    /// Hard mode and for Apps rows ticked "Own limit".</summary>
+    public static bool IsCustom(Config c) => false;
 
     static readonly Dictionary<string, Preset> Map = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -44,33 +48,44 @@ internal static class Presets
         ["Balanced"]         = new("Balanced",         true, 30, 12, 3.0, 3.0, 3.0, 1.00, 0.15, 0.50, 40,  0.50, 30,  16,  15),
         ["Safe"]             = new("Safe",             true, 20,  8, 4.0, 4.0, 4.0, 1.50, 0.08, 0.30, 80,  0.70, 40,  24,  25),
         ["UltraSafe"]        = new("UltraSafe",        true, 12,  5, 5.0, 5.0, 5.0, 2.50, 0.04, 0.15, 150, 0.85, 90,  48,  50),
+        // Custom starts as a copy of Balanced; the user's own numbers (Config.CustomLevel) are applied on top in Resolve.
+        ["Custom"]           = new("Custom",           true, 30, 12, 3.0, 3.0, 3.0, 1.00, 0.15, 0.50, 40,  0.50, 30,  16,  15),
     };
 
-    /// <summary>The preset for the config. "Custom" uses the individual settings in config.json.</summary>
+    /// <summary>The preset for the config. "Custom" = Balanced with the user's own numbers (Config.CustomLevel).</summary>
     public static Preset Resolve(Config c)
     {
         string key = (c.Profile ?? "").Replace(" ", "").Replace("-", "").Replace("_", "");
-        if (string.Equals(key, "Custom", StringComparison.OrdinalIgnoreCase))
-            return new Preset("Custom", c.LimitWhenRamFree, c.PressureFreePercent, c.CriticalFreePercent,
-                c.SmartScanSeconds, c.TrimCooldownSeconds, c.GraceAfterFocusSeconds, 1.0, 0.15, 0.5, 40, 0.5);
+        bool custom = string.Equals(key, CustomName, StringComparison.OrdinalIgnoreCase);
         var p = Map.TryGetValue(key, out var found) ? found : Map["Balanced"];
-        // "Only limit when RAM is low" (LimitWhenRamFree off) now works with the five levels too:
+        // "Only limit when RAM is low" (LimitWhenRamFree off) works with every level:
         // they only act once free RAM drops below the level's Pressure value.
         p = p with { Always = c.LimitWhenRamFree };
         PresetOverride? o = null;
-        if (c.PresetOverrides != null)
+        if (custom) o = c.CustomLevel ?? new PresetOverride();
+        else if (c.PresetOverrides != null)
             foreach (var kv in c.PresetOverrides)
                 if (string.Equals(kv.Key, p.Name, StringComparison.OrdinalIgnoreCase)) { o = kv.Value; break; }
         if (o == null) return p;
-        return p with
+        var r = p with
         {
             Scan        = Math.Max(0.5, o.Scan ?? p.Scan),
-            HoldMB      = Math.Max(1, o.HoldMB ?? p.HoldMB),
+            HoldMB      = Math.Max(AbsMinMB, o.HoldMB ?? p.HoldMB),
             Cooldown    = Math.Max(0, o.Cooldown ?? p.Cooldown),
             Grace       = Math.Max(0, o.Grace ?? p.Grace),
             BudgetScale = Math.Clamp(o.BudgetScale ?? p.BudgetScale, 0.1, 10),
             MinProcMB   = Math.Max(1, o.MinProcMB ?? p.MinProcMB),
             CritFactor  = Math.Clamp(o.CritFactor ?? p.CritFactor, 0.1, 1),
+        };
+        if (!custom) return r;
+        // Custom: the small helper numbers follow the ceiling unless the user set them, so a tiny ceiling
+        // (for example 3 MB) is not silently ignored by "min process" / "floor".
+        int hold = r.HoldMB;
+        return r with
+        {
+            MinProcMB    = Math.Max(1, o.MinProcMB ?? Math.Min(40, hold)),
+            HoldFloorMB  = Math.Max(AbsMinMB, o.FloorMB ?? Math.Min(hold, 16)),
+            HoldKeepPct  = Math.Clamp(o.KeepPct ?? 15, 1, 100),
         };
     }
 

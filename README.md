@@ -33,9 +33,14 @@ Right-click the tray icon:
 Starting a second copy of the app opens the window of the running one.
 - Mode (Smart / Hard) and all the option toggles are in the window, tab **Settings**.
 
-**Intensity > Edit levels...** opens a table with the five levels so you can change each one's check interval, ceiling per app, cooldown, grace, budget scale, minimum process size and critical factor. Only the values you change are stored (`PresetOverrides` in config.json); "Reset all to defaults" clears them.
+**Intensity** is a slider on the Main tab (Ultra Safe ... Ultra Performance, then Custom). The values of each level can still be overridden by hand in config.json (`PresetOverrides`); only the values you change are stored.
 
 Every choice is saved to `config.json` and applied immediately (limits are released and re-applied with the new mode).
+
+## More tools
+
+- **Apps tab**: *Process tree...*, a GPU column, right-click *Check on VirusTotal* (only the SHA-256 is sent as part of the page address; the file is never uploaded).
+- **Game profile extras** (Settings > Game detection, all off by default): pause Windows Update while a game runs (restored afterwards, also after a crash) and clear the standby list when free RAM is low during a game (at most once per interval).
 
 ## Build
 
@@ -92,7 +97,7 @@ All levels act at all times. Check interval = 1s (Ultra Performance) ... 5s (Ult
 | Safe | 4 s | 40 MB | more room |
 | Ultra Safe | 5 s | 90 MB | most room |
 
-`Custom` (tray > Intensity, or Settings > Intensity) keeps using each target's own `CeilingMB` per process, plus the "apps not in the list" limit (`Default*`). **Those per-app numbers (Apps tab) are used only with Custom (and Hard mode)**; with the five levels they are greyed out and ignored.
+`Custom` (the last stop of the slider on the Main tab) is a level with your own numbers (`CustomLevel` in config.json): ceiling per process (down to 2 MB), check interval, grace, cooldown, plus budget scale / min process / critical factor / floor / keep % under "More numbers". It starts as a copy of Balanced and runs through the same engine path as the five levels. **The per-app numbers (Apps tab) are used only in Hard mode and for rows ticked "Own limit"**; in Smart mode they are ignored.
 
 All columns of the level table work in hold mode: *Cooldown* = minimum seconds between two cap passes of an app, *Budget scale* multiplies the app target (ceiling x process count), *Min process* leaves smaller processes alone, *Critical factor* multiplies the target and lowers existing ceilings once when free RAM is below the level's critical %. **Only limit when RAM is low** (`LimitWhenRamFree: false`) makes every level wait until free RAM is below its pressure % (Ultra Performance 60% ... Ultra Safe 12%).
 
@@ -114,10 +119,9 @@ Focusing an app lifts its ceiling at once (the first moments after returning to 
 
 ## One window
 
-Double-click the tray icon: tabs **Main** and **Advanced** (Advanced holds Apps, Settings pages and Intensity levels). Closing the window only hides it.
+Double-click the tray icon: tabs **Main** and **Advanced** (Advanced holds the Apps and Settings pages). Closing the window only hides it.
 
 - **Thread memory priority** (`ThreadMemoryPriority`, default off; Settings > advanced options): besides the process, the threads of background apps also get the low memory priority (`BackgroundMemoryPriority`). Processes that own an active audio stream are never touched. Experimental; needs `LowerMemoryPriority`.
-- **Windows tools** (Settings > advanced options): Toggle MemCompression (note: turning it off raises RAM pressure), Toggle PageCombining (reboot needed), iGPU route. Results go to a message box and to the log.
 - The separate SmartRam Lab (second engine, baseline/metrics tab) was removed; its useful parts are options of the main engine now.
 - The app runs as Administrator (`app.manifest`) because the tools and some processes need it.
 

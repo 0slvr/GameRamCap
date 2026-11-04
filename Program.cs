@@ -24,6 +24,8 @@ static class Program
                 return;
             }
             try { int n = Engine.ReleaseAllHardCeilings(); Logger.Write($"Watchdog: main app ended, released {n} ceiling(s)."); } catch { }
+            try { WindowsUpdatePause.RecoverStale(); } catch { }
+            try { int r = Suspender.RecoverStale(); if (r > 0) Logger.Write($"Watchdog: resumed {r} frozen process(es)."); } catch { }
             return;
         }
 
@@ -41,6 +43,8 @@ static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Logger.Write("Fatal exception: " + e.ExceptionObject);
         TaskScheduler.UnobservedTaskException += (_, e) => { Logger.Write("Task exception: " + e.Exception); e.SetObserved(); };
 
+        try { int n = Suspender.RecoverStale(); if (n > 0) Logger.Write($"Resumed {n} process(es) left frozen by the previous run."); } catch { }
+        try { WindowsUpdatePause.RecoverStale(); } catch { }
         StartWatchdog();
         ApplicationConfiguration.Initialize();
         Application.Run(new TrayContext());
@@ -97,7 +101,7 @@ sealed class TrayContext : ApplicationContext
             Logger.Open);
 
         _home = new HomePanel(() => _engine.Config, SaveCfg, () => _engine.Status, () => _engine.LimitedCount,
-            SetProfile, SetMode, SetEnabled, tab => ShowMain(tab));
+            SetProfile, SetMode, SetEnabled, tab => ShowMain(tab), _settings.SmartDetails);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add(_statusItem);
@@ -258,16 +262,15 @@ sealed class TrayContext : ApplicationContext
 
     MainWindow? _main;
 
-    void ShowMain(int tab, int inner = 0)
+    void ShowMain(int tab)
     {
         if (_main == null || _main.IsDisposed) _main = new MainWindow(_home!, _settings!);
         _main.Show();
         _main.WindowState = FormWindowState.Normal;
-        _main.SelectTab(tab, inner);
+        _main.SelectTab(tab);
         _main.Activate();
     }
 
-    void ShowIntensity() => ShowMain(MainWindow.TabAdvanced, MainWindow.AdvLevels);
     void ShowTargets() => ShowMain(MainWindow.TabHome);
 
     void LoadConfig()

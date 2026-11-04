@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace GameRamCap;
 
@@ -76,6 +77,36 @@ internal static class Native
         finally { CloseHandle(h); }
     }
 
+    // ---- CPU time and I/O bytes of a process (used by the Apps tab columns) ----
+    [StructLayout(LayoutKind.Sequential)]
+    struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+        public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetProcessIoCounters(IntPtr process, out IO_COUNTERS counters);
+
+    /// <summary>Total CPU time (kernel + user, in 100 ns units) and total bytes read + written (files, pipes, network)
+    /// of a process. Returns false when the process cannot be opened.</summary>
+    public static bool GetCpuIo(int pid, out long cpu100ns, out long ioBytes)
+    {
+        cpu100ns = ioBytes = 0;
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return false;
+        try
+        {
+            if (GetProcessTimes(h, out _, out _, out var kernel, out var user)) cpu100ns = kernel + user;
+            if (GetProcessIoCounters(h, out var io)) ioBytes = (long)(io.ReadTransferCount + io.WriteTransferCount);
+            return true;
+        }
+        finally { CloseHandle(h); }
+    }
+
     /// <summary>Soft trim: moves the process' pages to the standby list. No cap is set, the process
     /// can take any page back at once (a cheap soft fault, no disk) if it needs it.</summary>
     public static bool Trim(int pid)
@@ -83,6 +114,23 @@ internal static class Native
         var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
         if (h == IntPtr.Zero) return false;
         try { return K32EmptyWorkingSet(h); }
+        finally { CloseHandle(h); }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref uint size);
+
+    /// <summary>Full path of the process' exe (works for most processes with only limited access). null when it cannot be read.</summary>
+    public static string? GetImagePath(int pid)
+    {
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            uint size = (uint)sb.Capacity;
+            return QueryFullProcessImageNameW(h, 0, sb, ref size) ? sb.ToString() : null;
+        }
         finally { CloseHandle(h); }
     }
 

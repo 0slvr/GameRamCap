@@ -74,7 +74,7 @@ internal sealed partial class Engine
         double scale = pr0.BudgetScale * (level == 2 ? pr0.CritFactor : 1.0);
         long target = (long)(perProc * procs.Count * scale);
         long projected = procs.Sum(x => x.Ws);
-        long floorAbs = Math.Max(8, pr0.HoldFloorMB > 0 ? pr0.HoldFloorMB : Config.HoldMinProcessMB) * MB;
+        long floorAbs = Math.Max(Presets.AbsMinMB, pr0.HoldFloorMB > 0 ? pr0.HoldFloorMB : Config.HoldMinProcessMB) * MB;
         double keep = Math.Clamp(pr0.HoldKeepPct > 0 ? pr0.HoldKeepPct : Config.HoldKeepPercent, 0, 100) / 100.0;
         long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe) * MB : 0;
 
@@ -112,7 +112,7 @@ internal sealed partial class Engine
     /// (never below the level's floor or a safe level learned earlier). Auto-squeeze raises it again if the app stutters.</summary>
     void LowerHeld(List<Proc> procs, Target t, Preset pr)
     {
-        long floorAbs = Math.Max(8, pr.HoldFloorMB > 0 ? pr.HoldFloorMB : Config.HoldMinProcessMB) * MB;
+        long floorAbs = Math.Max(Presets.AbsMinMB, pr.HoldFloorMB > 0 ? pr.HoldFloorMB : Config.HoldMinProcessMB) * MB;
         long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe) * MB : 0;
         foreach (var x in procs)
         {
@@ -135,7 +135,7 @@ internal sealed partial class Engine
         bool ownMode = t.UseOwnLimit || Presets.IsCustom(c);
         bool auto = c.AutoSqueeze && (!ownMode || t.Adaptive);
         var pz = P;
-        long absMin = Math.Max(8, pz.HoldFloorMB > 0 ? Math.Min(c.AutoMinProcessMB, pz.HoldFloorMB) : c.AutoMinProcessMB) * MB;   // low levels may squeeze below the global minimum
+        long absMin = Math.Max(Presets.AbsMinMB, pz.HoldFloorMB > 0 ? Math.Min(c.AutoMinProcessMB, pz.HoldFloorMB) : c.AutoMinProcessMB) * MB;   // low levels may squeeze below the global minimum
         double faultRate = Math.Max(10, c.AutoFaultRate);
         double probe = Math.Max(3, c.AutoProbeSeconds);
         long tmax = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;

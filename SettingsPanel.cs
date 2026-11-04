@@ -8,25 +8,16 @@ internal sealed class SettingsPanel : UserControl
     readonly Func<Config> _cfg;
     readonly Action _save;
     readonly List<(CheckBox Box, Func<Config, bool> Get, bool SmartOnly)> _boxes = new();
-    readonly RadioButton _smart = new() { AutoSize = true, Text = Ui.SmartText };
-    readonly RadioButton _hard = new() { AutoSize = true, Text = Ui.HardText };
-    readonly ComboBox _level = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
     readonly ToolTip _tip = new();
-    readonly NumericUpDown _delay = new() { Minimum = 0, Maximum = 120, Width = 60 };
+    readonly ModernNumeric _delay = new() { Minimum = 0, Maximum = 120, Width = 60 };
     readonly List<(NumericUpDown Box, Func<Config, decimal> Get, bool CustomOnly)> _nums = new();
-    readonly TextBox _games = new() { Multiline = true, Width = 300, Height = 90, ScrollBars = ScrollBars.Vertical };
-    readonly TextBox _fsIgnore = new() { Multiline = true, Width = 300, Height = 90, ScrollBars = ScrollBars.Vertical };
-    FlowLayoutPanel _smartPanel = null!, _hardPanel = null!, _customPanel = null!;
-    readonly NumericUpDown _defCeil = new() { Minimum = 20, Maximum = 8000, Value = 300, Width = 70 };
-    readonly CheckBox _defFixed = new() { Text = "fixed (never grows)", AutoSize = true, Margin = new Padding(8, 5, 3, 3) };
-    FlowLayoutPanel _defaultsPanel = null!;
-    readonly RadioButton _scopeProc = new() { AutoSize = true, Text = Ui.ScopeProcText };
-    readonly RadioButton _scopeApp = new() { AutoSize = true, Text = Ui.ScopeAppText };
-    readonly Label _defLabel = new() { AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
-    /// <summary>The settings sub-pages (Mode, General, Games &amp; lists, Tools). MainWindow shows them in its Advanced tab.</summary>
+    readonly ModernTextBox _games = new() { Multiline = true, Width = 300, Height = 90, ScrollBars = ScrollBars.Vertical };
+    readonly ModernTextBox _fsIgnore = new() { Multiline = true, Width = 300, Height = 90, ScrollBars = ScrollBars.Vertical };
+    FlowLayoutPanel _smartPanel = null!;
+    /// <summary>The Smart-mode fine-tuning options. The Main tab shows them inside the Smart mode card.</summary>
+    public Control SmartDetails => _smartPanel;
+    /// <summary>The Settings tab: one page of cards (game detection, games &amp; lists, maintenance).</summary>
     public readonly List<TabPage> Pages = new();
-    readonly RadioButton _whenAlways = new() { AutoSize = true, Text = "All the time (even when no game is running)" };
-    readonly RadioButton _whenGame = new() { AutoSize = true, Text = "Only while a game is running" };
     bool _syncing;
 
     public SettingsPanel(Func<Config> cfg, Action save, Action<string> setProfile, Action openConfig, Action reload, Action forgetLearned, Action openLog)
@@ -35,14 +26,35 @@ internal sealed class SettingsPanel : UserControl
         _save = save;
         Dock = DockStyle.Fill;
 
-        FlowLayoutPanel Page(string title)
+        FlowLayoutPanel? shared = null;
+        // A card on the shared "Settings" page, or (own = tab name) on a page of its own in the tab strip.
+        FlowLayoutPanel Page(string title, string? own = null)
         {
-            var page = new TabPage(title);
-            Ui.Flat(page);
-            var f = Ui.PageFlow();
-            page.Controls.Add(f);
-            Pages.Add(page);
-            return f;
+            FlowLayoutPanel flow;
+            if (own != null)
+            {
+                var page = new TabPage(own);
+                Ui.Flat(page);
+                flow = Ui.PageFlow();
+                page.Controls.Add(flow);
+                Pages.Add(page);
+            }
+            else
+            {
+                if (shared == null)
+                {
+                    var page = new TabPage("Settings");
+                    Ui.Flat(page);
+                    shared = Ui.PageFlow();
+                    page.Controls.Add(shared);
+                    Pages.Insert(0, page);
+                }
+                flow = shared;
+            }
+            var card = Ui.MakeCard();
+            card.Controls.Add(new Label { Text = title, AutoSize = true, UseMnemonic = false, Font = Ui.Hero, Margin = new Padding(3, 0, 3, 8) });
+            flow.Controls.Add(card);
+            return card;
         }
         static Label Note(string text) => Ui.Note(text);
 
@@ -51,28 +63,9 @@ internal sealed class SettingsPanel : UserControl
             return new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Margin = new Padding(0) };
         }
 
-        // ================= 1. Mode (each mode shows only its own settings) =================
-        var modePage = Page("Mode");
-        modePage.Controls.Add(Heading("Mode"));
-        _smart.CheckedChanged += (_, _) => { if (!_syncing && _smart.Checked) SetMode("Smart"); };
-        _hard.CheckedChanged += (_, _) => { if (!_syncing && _hard.Checked) SetMode("Hard"); };
-        modePage.Controls.Add(_smart);
-        modePage.Controls.Add(_hard);
-
         // ---- Smart settings ----
         _smartPanel = Group();
         var sm = _smartPanel;
-        sm.Controls.Add(Heading("Smart mode - intensity"));
-        foreach (var label in Presets.AllLabels) _level.Items.Add(label);
-        _level.SelectedIndexChanged += (_, _) =>
-        {
-            if (_syncing || _level.SelectedIndex < 0) return;
-            setProfile(Presets.AllNames[_level.SelectedIndex]);
-        };
-        sm.Controls.Add(_level);
-        sm.Controls.Add(Note("The five levels use the table in the \"Intensity levels\" tab. Custom uses its own numbers (below) and the " +
-                             "Limit / Min / Max of each app from Advanced > Apps."));
-
         sm.Controls.Add(Heading("When to trim"));
         Add(sm, "Only limit when RAM is low (below the level's pressure %)", c => !c.LimitWhenRamFree,  (c, v) => c.LimitWhenRamFree = !v,  true);
 
@@ -98,64 +91,16 @@ internal sealed class SettingsPanel : UserControl
         AddNum(sm, "Keep protecting after the sound stops (s)", c => (decimal)c.AudioProtectGraceSeconds, (c, v) => c.AudioProtectGraceSeconds = (double)v, 0, 120, 1, false,
             "AudioProtectGraceSeconds");
 
-        // Custom numbers: shown only while Intensity = Custom
-        _customPanel = Group();
-        var cus = _customPanel;
-        cus.Controls.Add(Heading("Custom level numbers"));
-        AddNum(cus, "Start trimming below free RAM %",                       c => c.PressureFreePercent, (c, v) => c.PressureFreePercent = (int)v, 1, 90, 0, false, "PressureFreePercent");
-        AddNum(cus, "Trim harder below free RAM %",                          c => c.CriticalFreePercent, (c, v) => c.CriticalFreePercent = (int)v, 1, 90, 0, false, "CriticalFreePercent");
-        AddNum(cus, "Check RAM every (s)",                                   c => (decimal)c.SmartScanSeconds, (c, v) => c.SmartScanSeconds = (double)v, 0.5m, 60, 1, false, "SmartScanSeconds");
-        AddNum(cus, "Minimum seconds between trims of one app",              c => (decimal)c.TrimCooldownSeconds, (c, v) => c.TrimCooldownSeconds = (double)v, 0, 600, 1, false, "TrimCooldownSeconds");
-        AddNum(cus, "App untouched after you leave it (s)",                  c => (decimal)c.GraceAfterFocusSeconds, (c, v) => c.GraceAfterFocusSeconds = (double)v, 0, 120, 1, false, "GraceAfterFocusSeconds");
-        AddNum(cus, "Smallest ceiling per process (MB)",                     c => c.HoldMinProcessMB, (c, v) => c.HoldMinProcessMB = (int)v, 8, 1024, 0, false, "HoldMinProcessMB");
-        AddNum(cus, "Keep at least this % of current size",                  c => c.HoldKeepPercent,  (c, v) => c.HoldKeepPercent = (int)v,  0, 100, 0, false, "HoldKeepPercent");
-        sm.Controls.Add(cus);
-        modePage.Controls.Add(sm);
-
-        // ---- Hard settings ----
-        _hardPanel = Group();
-        var hd = _hardPanel;
-        hd.Controls.Add(Heading("Hard mode"));
-        hd.Controls.Add(_scopeProc);
-        hd.Controls.Add(_scopeApp);
-        _scopeProc.CheckedChanged += (_, _) => { if (!_syncing && _scopeProc.Checked) { _cfg().HardScope = "Process"; _save(); } };
-        _scopeApp.CheckedChanged  += (_, _) => { if (!_syncing && _scopeApp.Checked)  { _cfg().HardScope = "App"; _save(); } };
-        hd.Controls.Add(Note("A fixed RAM ceiling that stays until you focus the app. Numbers per app: Advanced > Apps (Limit MB, Min / Max MB, " +
-                             "Adaptive - per process only). Apps not in the list use the limit below. The Smart options do not apply here, so they are hidden."));
-        modePage.Controls.Add(hd);
-
-        // ---- Limit for apps that are not in the Apps list: used by Hard mode and by the Custom level only ----
-        _defaultsPanel = Group();
-        _defaultsPanel.Controls.Add(Heading("Apps not in the list"));
-        var defRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        defRow.Controls.Add(_defLabel);
-        defRow.Controls.Add(_defCeil);
-        defRow.Controls.Add(_defFixed);
-        _defaultsPanel.Controls.Add(defRow);
-        _defaultsPanel.Controls.Add(Note("Applies to every app you did not add in Advanced > Apps (needs \"Limit all apps\" in General)."));
-        void SaveDefaults()
-        {
-            if (_syncing) return;
-            _cfg().SetDefaultLimit((int)_defCeil.Value, _defFixed.Checked);
-            _save();
-        }
-        _defCeil.ValueChanged += (_, _) => SaveDefaults();
-        _defFixed.CheckedChanged += (_, _) => SaveDefaults();
-        modePage.Controls.Add(_defaultsPanel);
-
         // ================= 2. General (both modes) =================
-        var gen = Page("General");
-        gen.Controls.Add(Heading("When should limits apply?"));
-        var when = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        when.Controls.Add(_whenAlways);
-        when.Controls.Add(_whenGame);
-        gen.Controls.Add(when);
-        _whenAlways.CheckedChanged += (_, _) => { if (!_syncing && _whenAlways.Checked) { _cfg().AlwaysLimit = true; _save(); } };
-        _whenGame.CheckedChanged   += (_, _) => { if (!_syncing && _whenGame.Checked)   { _cfg().AlwaysLimit = false; _save(); } };
-
-        gen.Controls.Add(Heading("Game detection"));
+        var gen = Page("Game detection");
         Add(gen, "Auto-detect fullscreen games",                             c => c.AutoDetectFullscreen,(c, v) => c.AutoDetectFullscreen = v,false);
         Add(gen, "Keep limits while the game runs (even after Alt+Tab)",     c => c.KeepLimitsWhileGameRuns, (c, v) => c.KeepLimitsWhileGameRuns = v, false);
+        Add(gen, "Pause Windows Update while a game runs (restored after)", c => c.PauseWindowsUpdate, (c, v) => c.PauseWindowsUpdate = v, false);
+        Add(gen, "Clear the standby list when free RAM is low while a game runs", c => c.StandbyClean, (c, v) => c.StandbyClean = v, false);
+        AddNum(gen, "   ...only when free RAM is below (MB)", c => c.StandbyFreeBelowMB, (c, v) => c.StandbyFreeBelowMB = (int)v, 128, 32768, 0, false,
+            "StandbyFreeBelowMB - free + zeroed memory, not counting the standby cache.");
+        AddNum(gen, "   ...at most once every (seconds)", c => c.StandbyMinIntervalSeconds, (c, v) => c.StandbyMinIntervalSeconds = (int)v, 10, 3600, 0, false,
+            "StandbyMinIntervalSeconds");
         var delayRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         delayRow.Controls.Add(new Label { Text = "Game must be in front for (s) before limiting:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
         _delay.ValueChanged += (_, _) => { if (_syncing) return; _cfg().DelaySeconds = (int)_delay.Value; _save(); };
@@ -165,7 +110,7 @@ internal sealed class SettingsPanel : UserControl
             "RelimitDelaySeconds - avoids flicker when you switch windows.");
 
         // ================= 4. Games & lists =================
-        var lst = Page("Games & lists");
+        var lst = Page("Games & lists", "Games and lists");
         lst.Controls.Add(Heading("Games (always treated as a game)"));
         lst.Controls.Add(Note("One name per line, no .exe."));
         lst.Controls.Add(_games);
@@ -182,18 +127,11 @@ internal sealed class SettingsPanel : UserControl
         lst.Controls.Add(saveLists);
         lst.Controls.Add(Heading("Never touched (built in)"));
         lst.Controls.Add(Note("System processes, security / anti-cheat services, the shell and recording tools are always protected. " +
-                              "Add your own with Exceptions (Main tab or Advanced > Apps)."));
+                              "Add your own with Exceptions (Main tab or Apps tab)."));
         lst.Controls.Add(Btn("Show protected apps...", ShowProtected));
 
-        // ================= 5. Tools =================
-        var tl = Page("Tools");
-        tl.Controls.Add(Heading("Windows tools"));
-        var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(Ui.ContentWidth, 0) };
-        tools.Controls.Add(Btn("Toggle MemCompression", ToggleMemCompression));
-        tools.Controls.Add(Btn("Toggle PageCombining", () => RunTool(() => SystemTools.Ps(SystemTools.MmTogglePc))));
-        tools.Controls.Add(Btn("iGPU route...", RouteIgpu));
-        tl.Controls.Add(tools);
-        tl.Controls.Add(Heading("Maintenance"));
+        // ================= 5. Maintenance =================
+        var tl = Page("Maintenance");
         var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(Ui.ContentWidth, 0) };
         buttons.Controls.Add(Btn("Open config file", openConfig));
         buttons.Controls.Add(Btn("Reload config", reload));
@@ -204,54 +142,13 @@ internal sealed class SettingsPanel : UserControl
         Sync();
     }
 
-    /// <summary>Runs a tool off the UI thread, then shows and logs its result.</summary>
-    void ToggleMemCompression()
-    {
-        // Show the current state first and ask: turning compression OFF raises RAM pressure (the opposite of this app's goal).
-        Task.Run(() => SystemTools.Ps("(Get-MMAgent).MemoryCompression")).ContinueWith(t =>
-        {
-            if (IsDisposed) return;
-            string cur = t.IsFaulted ? "" : t.Result.Trim();
-            bool? on = cur.Equals("True", StringComparison.OrdinalIgnoreCase) ? true : cur.Equals("False", StringComparison.OrdinalIgnoreCase) ? false : null;
-            string state = on == true ? "ON" : on == false ? "OFF" : "unknown";
-            string action = on == true ? "turn it OFF (uses MORE RAM)" : "turn it ON";
-            BeginInvoke(() =>
-            {
-                var r = MessageBox.Show(this, $"Memory compression is currently {state}.\n\nDo you want to {action}?\nA reboot is required for the change to apply.",
-                    "Toggle MemCompression", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
-                if (r == DialogResult.Yes) RunTool(() => SystemTools.Ps(SystemTools.MmToggleMc));
-            });
-        });
-    }
-
-    void RunTool(Func<string> work)
-    {
-        Task.Run(work).ContinueWith(t =>
-        {
-            string r = t.IsFaulted ? "Error: " + t.Exception?.GetBaseException().Message : t.Result;
-            Logger.Write("Tool: " + r.Replace("\r", " ").Replace("\n", " | "));
-            if (!IsDisposed) BeginInvoke(() => MessageBox.Show(this, r, "GameRamCap", MessageBoxButtons.OK, MessageBoxIcon.Information));
-        });
-    }
-
-    void RouteIgpu()
-    {
-        using var dlg = new OpenFileDialog { Filter = "Programs (*.exe)|*.exe", Title = "Pick the app to route" };
-        if (dlg.ShowDialog() != DialogResult.OK) return;
-        var r = MessageBox.Show(this, "Yes = route to the power-saving GPU (iGPU)\nNo = remove the override", "iGPU route", MessageBoxButtons.YesNoCancel);
-        if (r == DialogResult.Cancel) return;
-        string res = SystemTools.GpuPref(dlg.FileName, r == DialogResult.Yes ? 1 : 0);
-        Logger.Write("Tool: " + res);
-        MessageBox.Show(this, res, "GameRamCap");
-    }
-
     static Label Heading(string text) => Ui.Heading(text);
 
     static Button Btn(string text, Action click) => Ui.Btn(text, click);
 
     void Add(FlowLayoutPanel flow, string text, Func<Config, bool> get, Action<Config, bool> set, bool smartOnly)
     {
-        var box = new CheckBox { Text = text, AutoSize = true, Margin = new Padding(3, 3, 3, 3) };
+        var box = new ModernCheck { Text = text, AutoSize = true, Margin = new Padding(3, 3, 3, 3) };
         box.CheckedChanged += (_, _) =>
         {
             if (_syncing) return;
@@ -271,7 +168,9 @@ internal sealed class SettingsPanel : UserControl
     {
         var names = string.Join(Environment.NewLine, Engine.Protected.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
         using var f = new Form { Text = "Protected apps (never limited)", ClientSize = new Size(360, 460), StartPosition = FormStartPosition.CenterParent };
-        f.Controls.Add(new TextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Text = names });
+        f.Controls.Add(new ModernTextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Text = names });
+        f.Font = Ui.Base;
+        Ui.Polish(f);
         f.ShowDialog(this);
     }
 
@@ -280,7 +179,7 @@ internal sealed class SettingsPanel : UserControl
     {
         var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         var lbl = new Label { Text = text, AutoSize = false, Width = 380, Height = 24, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(3, 3, 3, 3) };
-        var num = new NumericUpDown
+        var num = new ModernNumeric
         {
             Minimum = min, Maximum = max, DecimalPlaces = decimals, Increment = decimals > 0 ? 0.5m : 1m, Width = 70,
         };
@@ -298,13 +197,6 @@ internal sealed class SettingsPanel : UserControl
         _nums.Add((num, get, customOnly));
     }
 
-    void SetMode(string mode)
-    {
-        _cfg().Mode = mode;
-        Logger.Write($"Mode set to {mode}.");
-        _save();
-    }
-
     /// <summary>Re-reads the config into the controls (after a reload, a mode change, or a tray action).</summary>
     public void Sync()
     {
@@ -312,29 +204,13 @@ internal sealed class SettingsPanel : UserControl
         try
         {
             var c = _cfg();
-            string cur = Presets.Resolve(c).Name;
-            int idx = Array.FindIndex(Presets.AllNames, n => string.Equals(n, cur, StringComparison.OrdinalIgnoreCase));
-            _level.SelectedIndex = idx;
-            _smart.Checked = c.IsSmart();
-            _hard.Checked = !c.IsSmart();
-            _smartPanel.Visible = c.IsSmart();
-            _hardPanel.Visible = !c.IsSmart();
-            _scopeProc.Checked = !c.HardPerApp();
-            _scopeApp.Checked = c.HardPerApp();
-            _defLabel.Text = Ui.LimitLabel(c.HardPerApp());
-            _customPanel.Visible = c.IsSmart() && Presets.IsCustom(c);
-            _defaultsPanel.Visible = !c.IsSmart() || Presets.IsCustom(c);
-            _defCeil.Value = Math.Clamp(c.DefaultCeilingMB, (int)_defCeil.Minimum, (int)_defCeil.Maximum);
-            _defFixed.Checked = !c.DefaultAdaptive;
             _delay.Value = Math.Clamp(c.DelaySeconds, 0, 120);
             _delay.Enabled = !c.AlwaysLimit;
-            _whenAlways.Checked = c.AlwaysLimit;
-            _whenGame.Checked = !c.AlwaysLimit;
             foreach (var (box, get, smartOnly) in _boxes)
             {
                 box.Checked = get(c);
                 string? why = null;
-                if (smartOnly && !c.IsSmart()) why = "Only works in Smart mode (Advanced > Mode).";
+                if (smartOnly && !c.IsSmart()) why = "Only works in Smart mode (the Settings tab).";
                 else if (box.Text.StartsWith("Auto-squeeze") && !c.HoldBackground) why = "Needs \"Hold background apps\" turned on.";
                 else if (box.Text.StartsWith("Also lower thread") && !c.LowerMemoryPriority) why = "Needs \"Low memory priority for background apps\" turned on.";
                 box.Enabled = why == null;
