@@ -101,19 +101,14 @@ sealed class TrayContext : ApplicationContext
             Logger.Open);
 
         _home = new HomePanel(() => _engine.Config, SaveCfg, () => _engine.Status, () => _engine.LimitedCount,
-            SetProfile, SetMode, SetEnabled, tab => ShowMain(tab), _settings.SmartDetails);
+            SetProfile, SetMode, SetEnabled, tab => ShowMain(tab), _settings.SmartDetails, BoostNow);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_enabledItem);
         var boostItem = new ToolStripMenuItem("Boost now (free RAM)");
-        boostItem.Click += (_, _) => Task.Run(() =>
-        {
-            bool ok = StandbyCleaner.Boost();
-            Logger.Write(ok ? "Boost: emptied working sets and cleared the modified/standby lists." : "Boost: Windows refused (run GameRamCap as administrator).");
-            _balloons.Enqueue(("GameRamCap", ok ? "Boost done. Memory was freed." : "Boost failed. Run GameRamCap as administrator."));
-        });
+        boostItem.Click += (_, _) => _ = BoostNow();
         menu.Items.Add(boostItem);
         // Mode is the main choice; the intensity levels live inside Smart.
         _intensityMenu = new ToolStripMenuItem("Mode");
@@ -210,6 +205,15 @@ sealed class TrayContext : ApplicationContext
         Logger.Write(level != null ? $"Mode set to {mode}, level {level}." : $"Mode set to {mode}.");
         SaveCfg();
     }
+
+    /// <summary>One-shot Boost, shared by the tray menu and the Home page button.</summary>
+    Task<bool> BoostNow() => Task.Run(() =>
+    {
+        bool ok = StandbyCleaner.Boost();
+        Logger.Write(ok ? "Boost: emptied working sets and cleared the modified/standby lists." : "Boost: Windows refused (run GameRamCap as administrator).");
+        _balloons.Enqueue(("GameRamCap", ok ? "Boost done. Memory was freed." : "Boost failed. Run GameRamCap as administrator."));
+        return ok;
+    });
 
     void SetEnabled(bool on)
     {

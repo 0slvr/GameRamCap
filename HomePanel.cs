@@ -14,6 +14,8 @@ internal sealed class HomePanel : UserControl
     readonly Label _state = new() { AutoSize = true, Font = Ui.Hero };
     readonly Label _detail = new() { AutoSize = true, MaximumSize = new Size(Ui.ContentWidth, 0) };
     readonly Label _stats = new() { AutoSize = true, Tag = "muted" };
+    readonly Button _boost = new() { AutoSize = true, MinimumSize = new Size(120, 34), Text = "Boost now" };
+    readonly Label _boostMsg = new() { AutoSize = true, Tag = "muted", Margin = new Padding(8, 9, 3, 0) };
     readonly Button _toggle = new() { AutoSize = true, MinimumSize = new Size(120, 34), Tag = "primary" };
 
     readonly ModernRadio _smart = new() { AutoSize = true, Text = Ui.SmartText };
@@ -79,7 +81,7 @@ internal sealed class HomePanel : UserControl
 
     public HomePanel(Func<Config> cfg, Action save, Func<string> status, Func<int> limitedCount,
                      Action<string> setProfile, Action<string> setMode, Action<bool> setEnabled, Action<int> goTab,
-                     Control smartDetails)
+                     Control smartDetails, Func<Task<bool>> boost)
     {
         _cfg = cfg; _save = save; _status = status; _limitedCount = limitedCount;
         Dock = DockStyle.Fill;
@@ -95,7 +97,25 @@ internal sealed class HomePanel : UserControl
         statusCard.Controls.Add(_stats);
         _toggle.Margin = new Padding(3, 12, 3, 0);
         _toggle.Click += (_, _) => { if (!_syncing) setEnabled(!_cfg().Enabled); };
-        statusCard.Controls.Add(_toggle);
+        _boost.Margin = new Padding(3, 12, 3, 0);
+        _tip.SetToolTip(_boost, "Frees RAM right now: empties app working sets and clears the standby cache. Needs administrator rights. Apps may be a bit slower for a few seconds.");
+        _boost.Click += async (_, _) =>
+        {
+            _boost.Enabled = false;
+            _boostMsg.Text = "Boosting...";
+            bool ok = false;
+            try { ok = await boost(); } catch { }
+            if (IsDisposed) return;
+            _boostMsg.Text = ok ? "Memory freed." : "Failed. Run as administrator.";
+            _boostMsg.ForeColor = ok ? Ui.Good : Ui.Muted;
+            _boost.Enabled = true;
+            Refresh2();
+        };
+        var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        actions.Controls.Add(_toggle);
+        actions.Controls.Add(_boost);
+        actions.Controls.Add(_boostMsg);
+        statusCard.Controls.Add(actions);
         flow.Controls.Add(statusCard);
 
         // 2. Mode card (+ the chosen mode's own settings)
