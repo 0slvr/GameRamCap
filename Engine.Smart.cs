@@ -24,6 +24,14 @@ internal sealed partial class Engine
         public long BeforeWs, AfterWs, PfBase;
     }
 
+    /// <summary>Lowest ceiling allowed for a big process (see Config.BigProcMB): a share of the size it had when first held. 0 = no extra floor.</summary>
+    long BigFloor(long origWs)
+    {
+        int big = Config.BigProcMB, pct = Config.BigProcKeepPercent;
+        if (big <= 0 || pct <= 0 || origWs < big * MB) return 0;
+        return origWs * Math.Clamp(pct, 0, 100) / 100;
+    }
+
     sealed class Proc { public int Pid; public long Ws; public double Cpu; public bool Known; }
 
     readonly Dictionary<string, Group> _groups = new(StringComparer.OrdinalIgnoreCase);
@@ -40,15 +48,16 @@ internal sealed partial class Engine
 
     /// <summary>Hard ceiling on one background process (once per process). floor = a safe level learned earlier
     /// (auto-squeeze will not probe below it for the first minutes).</summary>
-    void HoldProcess(int pid, long ceiling, long ws = 0, long floor = 0)
+    void HoldProcess(int pid, long ceiling, long ws = 0, long floor = 0, bool pinFloor = false)
     {
         if (_limited.ContainsKey(pid) || _failLogged.Contains(pid)) return;
-        DateTime start;
-        try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return; }
+        DateTime start; string pname = "?";
+        try { using var p = Process.GetProcessById(pid); start = p.StartTime; pname = p.ProcessName; } catch { return; }
         if (!Native.TryGetLimits(pid, out var omin, out var omax)) { _failLogged.Add(pid); return; }
         if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); return; }
+        if (Config.LogHolds) Logger.Write($"Hold: {pname} pid {pid} capped at {ceiling / MB} MB (was {ws / MB} MB).");
         var st = new Limited { Start = start, OrigMin = omin, OrigMax = omax, Ceiling = ceiling, BaseCeiling = ceiling, OrigWs = Math.Max(ws, ceiling) };
-        if (floor > 0) { st.Floor = floor; st.FloorUntil = DateTime.UtcNow.AddMinutes(5); }
+        if (floor > 0) { st.Floor = floor; st.FloorUntil = pinFloor ? DateTime.MaxValue : DateTime.UtcNow.AddMinutes(5); }
         _limited[pid] = st;
     }
 
@@ -84,14 +93,59 @@ internal sealed partial class Engine
         foreach (var x in fresh.OrderByDescending(x => x.Ws))
         {
             if (projected <= target) break;                       // target reached: leave the rest alone
+            if (Config.MeasureNeed)
+            {
+                // Measured need: the process is trimmed once and its working set a few seconds later is what it really uses.
+                // It is capped at that + a margin (done by ProbeNeed itself); no guessed percentages, no learned ratchet.
+                if (!_hot.TryGetValue(x.Pid, out var hot)) { ProbeNeed(x.Pid, t.Exe, x.Ws); continue; }
+                long needCap = Math.Max(Presets.AbsMinMB * MB, (long)(hot * Math.Max(1.0, Config.NeedMargin)));
+                if (Config.NeedMaxMB > 0) needCap = Math.Min(needCap, Config.NeedMaxMB * MB);   // absolute ceiling: a busy process measured right after you left it must not set a 800 MB "need"
+                if (needCap >= x.Ws) continue;                    // it uses nearly all it has: nothing to gain
+                HoldProcess(x.Pid, needCap, x.Ws, needCap, true);
+                projected -= x.Ws - needCap;
+                continue;
+            }
             long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe, x.Ws) * MB : 0;   // per size class, not per app name
             long safe = learned > 0 ? Math.Min(learned, x.Ws) : 0;
-            long floor = Math.Max(Math.Max(floorAbs, (long)(x.Ws * keep)), safe);
+            long floor = Math.Max(Math.Max(Math.Max(floorAbs, (long)(x.Ws * keep)), safe), BigFloor(x.Ws));
             long cap = Math.Max(floor, x.Ws - (projected - target));
             if (cap >= x.Ws) continue;                            // already at its floor: nothing to gain
             HoldProcess(x.Pid, cap, x.Ws, safe);
             projected -= x.Ws - cap;
         }
+    }
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> _hot = new();       // pid -> measured working set after a trim
+    readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _hotProbing = new();
+
+    /// <summary>Measures what a background process really needs: trim it once, wait, read its working set (the pages it pulled
+    /// straight back are its hot set), then cap it at that x NeedMargin. Pinned as its floor, so auto-squeeze never goes below it.
+    /// Runs in the background; the process is skipped if you focus the app or it plays audio meanwhile.</summary>
+    void ProbeNeed(int pid, string name, long ws0)
+    {
+        if (!_hotProbing.TryAdd(pid, 0)) return;
+        if (!Native.Trim(pid)) { _hotProbing.TryRemove(pid, out _); _failLogged.Add(pid); return; }
+        Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay((int)(Math.Max(2, Config.NeedProbeSeconds) * 1000));
+                if (!Native.GetMemory(pid, out long ws, out _)) return;
+                _hot[pid] = ws;
+                long cap = Math.Max(Presets.AbsMinMB * MB, (long)(ws * Math.Max(1.0, Config.NeedMargin)));
+                if (Config.NeedMaxMB > 0) cap = Math.Min(cap, Config.NeedMaxMB * MB);
+                lock (Gate)
+                {
+                    if (!Enabled || !Config.Enabled || _exempt.Contains(name) || _limited.ContainsKey(pid) || IsAudioActive(pid)) return;
+                    if (cap >= ws0) return;
+                    HoldProcess(pid, cap, ws0, cap, true);
+                    var g = _groups.TryGetValue(name, out var gg) ? gg : null;
+                    if (g != null) g.Holding = true;
+                }
+            }
+            catch { }
+            finally { _hotProbing.TryRemove(pid, out _); }
+        });
     }
 
     /// <summary>One "hold" pass for an app: caps new/grown processes (at most once per Cooldown seconds)
@@ -120,7 +174,8 @@ internal sealed partial class Engine
         {
             if (!_limited.TryGetValue(x.Pid, out var st) || st.Releasing) continue;
             long learned = Config.LearnFloors ? LearnedStore.Get(t.Exe, st.OrigWs) * MB : 0;
-            long floor = Math.Max(floorAbs, Math.Min(learned, st.Ceiling));
+            long floor = Math.Max(Math.Max(floorAbs, Math.Min(learned, st.Ceiling)), BigFloor(st.OrigWs));
+            if (st.FloorUntil == DateTime.MaxValue) floor = Math.Max(Math.Min(st.Floor, st.Ceiling), Presets.AbsMinMB * MB);   // measured need: never below it
             long next = Math.Max(floor, (long)(st.Ceiling * pr.CritFactor));
             if (next < st.Ceiling && Native.SetCeiling(x.Pid, next)) st.Ceiling = next;
         }
@@ -153,18 +208,54 @@ internal sealed partial class Engine
             st.LastPf = pf; st.LastPfAt = now;
 
             long hi = Math.Max(st.Ceiling, Math.Min(tmax, (long)(st.OrigWs * 1.2)));
+            if (c.BigProcMaxGrowPercent > 0 && BigFloor(st.OrigWs) > 0 && st.BaseCeiling > 0)   // big process: room back, but not all the way up
+                hi = Math.Max(st.Ceiling, Math.Min(hi, st.BaseCeiling * c.BigProcMaxGrowPercent / 100));
             bool binding = ws >= st.Ceiling * 0.9;
             long next = st.Ceiling;
-
-            if (binding && rate > faultRate)
+            bool measured = c.MeasureNeed && _hot.ContainsKey(x.Pid);
+            if (measured)
             {
+                // Bounded growth (as in Memory Sentry's per-role maximum): a raise never goes past twice the measured need (at least 64 MB),
+                // so one noisy moment can no longer walk a ceiling back up to the size the process had before.
+                long capMax = Math.Max(64 * MB, 2 * _hot[x.Pid]);
+                if (c.NeedMaxMB > 0) capMax = Math.Min(capMax, 2L * c.NeedMaxMB * MB);   // never more than twice the absolute ceiling, whatever the thrash
+                hi = Math.Max(st.Ceiling, Math.Min(hi, capMax));
+            }
+            if (x.Known) st.CpuEwma = st.CpuEwma <= 0 ? x.Cpu * 100 : st.CpuEwma * 0.9 + x.Cpu * 100 * 0.1;
+            // CPU starvation (from Memory Sentry): a process that burns CPU while its resident set is a small share of its ceiling is
+            // refaulting instead of working - the "8 MB renderer at 100 % CPU" case. Give it room, in steps.
+            bool cpuStarved = measured && st.CpuEwma >= 50 && ws <= st.Ceiling * 0.25 && st.Ceiling < hi && !BurstApps.Contains(t.Exe);
+
+            if (cpuStarved)
+            {
+                st.QuietSecs = 0;
+                next = Math.Min(hi, st.Ceiling + Math.Max(8 * MB, st.Ceiling / 4));
+                st.Floor = next; st.FloorUntil = DateTime.MaxValue;
+                st.CpuEwma = 0;   // judge the new ceiling on fresh numbers
+            }
+            else if (binding && rate > faultRate && !BurstApps.Contains(t.Exe))   // burst apps always fault when opened: never learn a bigger size from that
+            {
+                // Faults served from RAM (soft) cost almost nothing: only give room back when the disk is really being read.
+                // Soft faults cost no disk but they cost CPU: 27,000 per second on a 7 MB process is a process refaulting its own pages
+                // all day. Faults per resident MB (Memory Sentry's measure) over ThrashFaultsPerMB means starved, whatever the disk does.
+                bool severe = c.ThrashFaultsPerMB > 0 && rate / Math.Max(1.0, ws / (double)MB) >= c.ThrashFaultsPerMB;
+                if (c.SmartFaultCheck && !severe && !PagingMonitor.IsHard(c.HardFaultPagesPerSec))
+                {
+                    st.QuietSecs = 0;
+                    if (c.LogHolds && (!_softLogAt.TryGetValue(x.Pid, out var sl) || (now - sl).TotalSeconds >= 30))
+                    {
+                        _softLogAt[x.Pid] = now;
+                        Logger.Write($"Soft: {t.Exe} pid {x.Pid} faults {rate:0}/s but the disk read only {PagingMonitor.Last ?? 0:0} pages/s - ceiling kept at {st.Ceiling / MB} MB.");
+                    }
+                    continue;
+                }
                 // Starting to stutter: give room back and remember this level as safe for a while.
                 st.QuietSecs = 0;
                 next = Math.Min(hi, st.Ceiling + Math.Max(16 * MB, st.Ceiling / 4));
                 if (auto)
                 {
-                    st.Floor = next; st.FloorUntil = now.AddMinutes(5);
-                    if (c.LearnFloors) LearnedStore.Raise(t.Exe, st.OrigWs, (int)(next / MB));
+                    st.Floor = next; st.FloorUntil = measured ? DateTime.MaxValue : now.AddMinutes(5);
+                    if (c.LearnFloors && !measured) LearnedStore.Raise(t.Exe, st.OrigWs, (int)(next / MB));   // measured mode: no ratchet in learned.json
                 }
             }
             else if (rate < faultRate * 0.2)
@@ -175,7 +266,7 @@ internal sealed partial class Engine
                     st.QuietSecs = 0;
                     if (auto)
                     {
-                        long lowest = Math.Max(absMin, now < st.FloorUntil ? st.Floor : 0);
+                        long lowest = Math.Max(Math.Max(absMin, now < st.FloorUntil ? st.Floor : 0), BigFloor(st.OrigWs));
                         next = binding ? st.Ceiling - st.Ceiling / 10 : (long)(ws * 1.25);
                         next = Math.Max(lowest, Math.Min(next, st.Ceiling));
                     }
@@ -185,9 +276,24 @@ internal sealed partial class Engine
             }
             else st.QuietSecs = 0;
 
-            if (next != st.Ceiling && Native.SetCeiling(x.Pid, next)) st.Ceiling = next;
+            if (next != st.Ceiling)
+            {
+                long old = st.Ceiling;
+                if (Native.SetCeiling(x.Pid, next))
+                {
+                    st.Ceiling = next;
+                    if (Config.LogHolds && (!_tuneLogAt.TryGetValue(x.Pid, out var la) || (now - la).TotalSeconds >= 10))
+                    {
+                        _tuneLogAt[x.Pid] = now;
+                        Logger.Write($"Tune: {t.Exe} pid {x.Pid} ceiling {old / MB} -> {next / MB} MB ({(next > old ? "raised" : "lowered")}, faults {rate:0}/s, disk reads {PagingMonitor.Last ?? -1:0} pages/s, ws {ws / MB} MB, started at {st.OrigWs / MB} MB).");
+                    }
+                }
+            }
         }
     }
+    readonly Dictionary<int, DateTime> _tuneLogAt = new();
+    readonly Dictionary<string, DateTime> _statusAt = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<int, DateTime> _softLogAt = new();
 
     void ApplySmart()
     {
@@ -203,6 +309,7 @@ internal sealed partial class Engine
         _lastSmart = now;
         RetryPendingReleases();
         RefreshAudio(now);
+        if (Config.SmartFaultCheck) PagingMonitor.Sample();
         LearnedStore.Flush(false);
 
         double freePct = Native.FreeRamPercent();
@@ -252,6 +359,7 @@ internal sealed partial class Engine
             finally { p.Dispose(); }
         }
         foreach (var pid in _cpuPrev.Keys.Where(k => !seen.Contains(k)).ToList()) _cpuPrev.Remove(pid);
+        foreach (var pid in _hot.Keys.Where(k => !seen.Contains(k)).ToList()) _hot.TryRemove(pid, out _);
         // Memory priority: give it back to processes that left the list (exited, or now excluded as a game).
         RestorePriority(_prio.Keys.Union(_threadPrio.Keys).Where(k => !seen.Contains(k)).ToList());
         _prioFail.RemoveWhere(k => !seen.Contains(k));
@@ -290,9 +398,33 @@ internal sealed partial class Engine
                 var audio = allProcs.Where(x => IsAudioActive(x.Pid)).ToList();
                 if (audio.Count > 0)
                 {
-                    foreach (var x in audio) { ReleasePid(x.Pid); RestorePriority(new List<int> { x.Pid }); }
+                    foreach (var x in audio)
+                    {
+                        RestorePriority(new List<int> { x.Pid });
+                        long audioCap = Config.AudioCapMB * MB;
+                        if (audioCap > 0 && (level > 0 || g.Holding))
+                        {
+                            // Playing: not squeezed to its need, but not left free either (Spotify's player grows to 800 MB+ when unlimited).
+                            if (x.Ws > audioCap) HoldProcess(x.Pid, audioCap, x.Ws, audioCap, true);
+                        }
+                        else ReleasePid(x.Pid);
+                    }
                     procs = allProcs.Where(x => !IsAudioActive(x.Pid)).ToList();
                     if (procs.Count == 0) { g.Pending = false; continue; }
+                }
+            }
+
+            // Diagnostics (LogHolds): every 30 s, why a big app is or is not being held.
+            if (Config.LogHolds && (!_statusAt.TryGetValue(name, out var sa) || (now - sa).TotalSeconds >= 30))
+            {
+                long tot = allProcs.Sum(x => x.Ws);
+                if (tot >= 300 * MB)
+                {
+                    _statusAt[name] = now;
+                    int heldN = allProcs.Count(x => _limited.ContainsKey(x.Pid));
+                    Logger.Write($"Status: {name} {tot / MB} MB in {allProcs.Count} procs, held {heldN}, exempt={_exempt.Contains(name)}, level={level}, holding={g.Holding}, since focus {(now - g.LastFocused).TotalSeconds:0}s, biggest: "
+                        + string.Join(", ", allProcs.OrderByDescending(x => x.Ws).Take(4).Select(x =>
+                            $"pid {x.Pid} {x.Ws / MB} MB" + (_limited.TryGetValue(x.Pid, out var ls) ? $" cap {ls.Ceiling / MB}" : " NOT held") + (IsAudioActive(x.Pid) ? " audio" : ""))));
                 }
             }
 

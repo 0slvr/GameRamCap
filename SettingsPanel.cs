@@ -73,6 +73,19 @@ internal sealed class SettingsPanel : UserControl
         Add(sm, "Gentle trim before capping (five levels)",                  c => c.SoftTrim,            (c, v) => c.SoftTrim = v,            true);
         Add(sm, "Hold background apps (hard ceiling)",                       c => c.HoldBackground,      (c, v) => c.HoldBackground = v,      true);
         Add(sm, "Remember safe limits per app (learned.json)",               c => c.LearnFloors,         (c, v) => c.LearnFloors = v,         true);
+        Add(sm, "Measure what each background process really needs",         c => c.MeasureNeed,         (c, v) => c.MeasureNeed = v,         true);
+
+        AddNum(sm, "Big apps: never squeeze a process bigger than (MB, 0 = off)", c => c.BigProcMB, (c, v) => c.BigProcMB = (int)v, 0, 8192, 0, false,
+            "BigProcMB - protects huge processes (for example Spotify at 1.3 GB) from being squeezed to a few MB.");
+        AddNum(sm, "   ...below this share of its size (%)",                  c => c.BigProcKeepPercent, (c, v) => c.BigProcKeepPercent = (int)v, 0, 100, 0, false,
+            "BigProcKeepPercent - for example 20 keeps a 1.3 GB process at 260 MB or more.");
+
+        AddNum(sm, "   ...may grow back to at most (% of its first ceiling, 0 = no limit)", c => c.BigProcMaxGrowPercent, (c, v) => c.BigProcMaxGrowPercent = (int)v, 0, 1000, 0, false,
+            "BigProcMaxGrowPercent - 200 lets a 192 MB ceiling grow to 384 MB at most when the app page-faults. 100 = fixed ceiling.");
+
+        Add(sm, "Give room back only when the disk is really read (ignore soft faults)", c => c.SmartFaultCheck, (c, v) => c.SmartFaultCheck = v, true);
+        AddNum(sm, "   ...disk page reads per second that count as real", c => c.HardFaultPagesPerSec, (c, v) => c.HardFaultPagesPerSec = (int)v, 1, 5000, 0, false,
+            "HardFaultPagesPerSec - system-wide Pages Input/sec. Below this, an app's page faults are served from RAM and are ignored.");
 
         sm.Controls.Add(Heading("Auto-squeeze (lowest RAM without stutter)"));
         Add(sm, "Auto-squeeze (lowest RAM without stutter)",                 c => c.AutoSqueeze,         (c, v) => c.AutoSqueeze = v,         true);
@@ -108,6 +121,16 @@ internal sealed class SettingsPanel : UserControl
         gen.Controls.Add(delayRow);
         AddNum(gen, "Delay before the limit returns after Alt+Tab (s)", c => (decimal)c.RelimitDelaySeconds, (c, v) => c.RelimitDelaySeconds = (double)v, 0, 60, 1, false,
             "RelimitDelaySeconds - avoids flicker when you switch windows.");
+
+        // ---- Faster wake-up (Win+V and apps) ----
+        var wake = Page("Faster wake-up");
+        wake.Controls.Add(Note("Trimmed apps are read back from disk when you need them. These options start that earlier. They cost some disk and RAM, so tune or turn them off on a slow HDD."));
+        Add(wake, "Win+V panel: wake up the moment the keys are pressed",    c => c.WakeWinVOnKey, (c, v) => c.WakeWinVOnKey = v, false);
+        Add(wake, "Apps: wake up when they come to the front",              c => c.PrefetchApps,  (c, v) => c.PrefetchApps = v,  false);
+        AddNum(wake, "Most MB read back per app",                           c => c.PrefetchMaxMB, (c, v) => c.PrefetchMaxMB = (int)v, 16, 1024, 0, false,
+            "PrefetchMaxMB - lower is lighter on disk and RAM; higher wakes big apps more fully.");
+        AddNum(wake, "Skip wake-ups when free RAM is below (%)",            c => c.PrefetchMinFreePercent, (c, v) => c.PrefetchMinFreePercent = (int)v, 0, 50, 0, false,
+            "PrefetchMinFreePercent - protects a full machine (for example while a game runs).");
 
         // ================= 4. Games & lists =================
         var lst = Page("Games & lists", "Games and lists");

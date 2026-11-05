@@ -22,8 +22,12 @@ internal sealed class TargetsForm : Form
     bool _syncing;
 
     // ---- live columns (CPU %, I/O) and sorting of the running list ----
-    sealed class Grp { public long Ws; public int N; public bool Denied; public long CpuD, IoD; public double Gpu; }
-    sealed record Row(string Name, long Ws, int N, bool Denied, double? Cpu, double? Io, double? Gpu);
+    sealed class Grp { public long Ws; public int N; public bool Denied; public long CpuD, IoD; public double Gpu; public List<(int Pid, long Ws)> Procs = new(); }
+    sealed record Row(string Name, long Ws, int N, bool Denied, double? Cpu, double? Io, double? Gpu, List<(int Pid, long Ws)> Procs);
+    // apps whose processes are shown under them (click the arrow, or Right / Left arrow keys)
+    readonly HashSet<string> _expanded = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<int, (double cpu, double io)> _procRate = new();
+    sealed record ChildTag(string App, int Pid);
     static readonly string[] ColNames = { "Running app", "RAM", "CPU", "GPU", "I/O", "Proc.", "Status" };
     List<Row> _rows = new();
     readonly Dictionary<string, (double cpu, double io)> _rate = new(StringComparer.OrdinalIgnoreCase);
@@ -45,7 +49,7 @@ internal sealed class TargetsForm : Form
         Font = Ui.Base;
 
         _rules = _cfg.Rules ?? new List<ProcessRule>();
-        _running.Columns.Add(ColNames[0], 125);
+        _running.Columns.Add(ColNames[0], 190);
         _running.Columns.Add(ColNames[1], 70);
         _running.Columns.Add(ColNames[2], 55);
         _running.Columns.Add(ColNames[3], 55);
@@ -173,7 +177,27 @@ internal sealed class TargetsForm : Form
             InfoForms.ShowConnections(this, names);
         };
         treeBtn.Click += (_, _) => InfoForms.ShowTree(this, SelectedNames());
-        _running.KeyDown += (_, e) => { if (e.KeyCode == Keys.Delete) EndSelected(); };
+        _running.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Delete) EndSelected();
+            else if (e.KeyCode == Keys.Right || e.KeyCode == Keys.Left)
+            {
+                var names = SelectedNames();
+                if (names.Count == 0) return;
+                foreach (var n in names) { if (e.KeyCode == Keys.Right) _expanded.Add(n); else _expanded.Remove(n); }
+                Render();
+                e.Handled = true;
+            }
+        };
+        _running.MouseDown += (_, e) =>   // click on the arrow at the start of a row
+        {
+            if (e.Button != MouseButtons.Left) return;
+            var hit = _running.GetItemAt(e.X, e.Y);
+            if (hit?.Tag is not string n) return;
+            if (e.X > hit.Bounds.Left + 22) return;
+            if (!_expanded.Remove(n)) _expanded.Add(n);
+            Render();
+        };
         var menu = new ContextMenuStrip();
         menu.Items.Add("End task", null, (_, _) => EndSelected());
         menu.Items.Add("Open file location", null, (_, _) => OpenLocation());
@@ -253,6 +277,7 @@ internal sealed class TargetsForm : Form
         bool baseline = first || secs >= 1.0;
         bool rates = !first && secs >= 1.0;
         var curPid = new Dictionary<int, (long cpu, long io)>();
+        if (rates) _procRate.Clear();
         var gpu = GpuUsage.Read();   // null until the first full sample exists
         var groups = new Dictionary<string, Grp>(StringComparer.OrdinalIgnoreCase);
 
@@ -265,14 +290,18 @@ internal sealed class TargetsForm : Form
                 if (!groups.TryGetValue(name, out var g)) groups[name] = g = new Grp();
                 g.N++;
                 if (gpu != null && gpu.TryGetValue(p.Id, out var gv)) g.Gpu += gv;
-                try { g.Ws += p.WorkingSet64; } catch { g.Denied = true; }   // access denied: still listed, RAM unknown
+                long pws = 0;
+                try { pws = p.WorkingSet64; g.Ws += pws; } catch { g.Denied = true; }   // access denied: still listed, RAM unknown
+                g.Procs.Add((p.Id, pws));
                 if (baseline && Native.GetCpuIo(p.Id, out var cpu, out var io))
                 {
                     curPid[p.Id] = (cpu, io);
                     if (rates && _prevPid.TryGetValue(p.Id, out var pv))
                     {
-                        g.CpuD += Math.Max(0, cpu - pv.cpu);   // only processes seen in both scans count
-                        g.IoD += Math.Max(0, io - pv.io);
+                        long dc = Math.Max(0, cpu - pv.cpu), di = Math.Max(0, io - pv.io);
+                        g.CpuD += dc;   // only processes seen in both scans count
+                        g.IoD += di;
+                        _procRate[p.Id] = (Math.Min(100.0, dc / (secs * 1e7) / Math.Max(1, Environment.ProcessorCount) * 100.0), di / secs);
                     }
                 }
             }
@@ -295,7 +324,7 @@ internal sealed class TargetsForm : Form
         _rows = groups.Select(kv => new Row(kv.Key, kv.Value.Ws, kv.Value.N, kv.Value.Denied,
             _rate.TryGetValue(kv.Key, out var r) ? r.cpu : (double?)null,
             _rate.TryGetValue(kv.Key, out var r2) ? r2.io : (double?)null,
-            gpu != null ? Math.Min(100.0, kv.Value.Gpu) : (double?)null)).ToList();
+            gpu != null ? Math.Min(100.0, kv.Value.Gpu) : (double?)null, kv.Value.Procs)).ToList();
     }
 
     IOrderedEnumerable<Row> Ord(IEnumerable<Row> rows, Func<Row, double> key) =>
@@ -343,6 +372,33 @@ internal sealed class TargetsForm : Form
     ProcessRule? FindRule(string exe) =>
         _rules.FirstOrDefault(r => string.Equals(r.Exe, exe, StringComparison.OrdinalIgnoreCase));
 
+    bool HasForeignKids(Dictionary<int, (int Parent, string Name)> map, Dictionary<int, List<int>> kids, string app)
+    {
+        foreach (var kv in map)
+            if (string.Equals(kv.Value.Name, app, StringComparison.OrdinalIgnoreCase) && kids.TryGetValue(kv.Key, out var l)
+                && l.Any(c => !string.Equals(map[c].Name, app, StringComparison.OrdinalIgnoreCase))) return true;
+        return false;
+    }
+
+    /// <summary>One process under an expanded app, then its children, indented by depth.</summary>
+    void AddProcNode(Dictionary<int, (int Parent, string Name)> map, Dictionary<int, List<int>> kids, string app, int pid, int depth, HashSet<int> seen)
+    {
+        if (depth > 32 || !seen.Add(pid) || !map.TryGetValue(pid, out var info)) return;
+        Native.GetMemory(pid, out long ws, out _);
+        var ci = new ListViewItem(new string(' ', 4 + depth * 4) + (depth > 1 ? "\u2514 " : "") + $"{info.Name} [{pid}]") { Tag = new ChildTag(app, pid), ForeColor = Ui.Muted };
+        bool have = _procRate.TryGetValue(pid, out var pr);
+        ci.SubItems.Add(ws > 0 ? (ws / (1024 * 1024)) + " MB" : "?");
+        ci.SubItems.Add(have ? (pr.cpu < 0.05 ? "0%" : pr.cpu.ToString("0.0") + "%") : "");
+        ci.SubItems.Add("");
+        ci.SubItems.Add(have ? FmtRate(pr.io) : "");
+        ci.SubItems.Add("");
+        ci.SubItems.Add("");
+        _running.Items.Add(ci);
+        if (kids.TryGetValue(pid, out var l))
+            foreach (int c in l.OrderBy(x => map[x].Name, StringComparer.OrdinalIgnoreCase).ThenBy(x => x))
+                AddProcNode(map, kids, app, c, depth + 1, seen);
+    }
+
     /// <summary>Redraws the list from the last scan: filter, sort, keep the selection and the scroll position.</summary>
     void Render()
     {
@@ -352,12 +408,25 @@ internal sealed class TargetsForm : Form
         int top = 0;
         try { top = _running.TopItem?.Index ?? 0; } catch { }
 
+        var map = Native.ProcessMap();
+        map.Remove(0);
+        var kids = new Dictionary<int, List<int>>();
+        foreach (var kv in map)
+        {
+            int par = kv.Value.Parent;
+            if (par == kv.Key || !map.ContainsKey(par)) continue;
+            if (!kids.TryGetValue(par, out var kl)) kids[par] = kl = new List<int>();
+            kl.Add(kv.Key);
+        }
+
         _running.BeginUpdate();
         _running.Items.Clear();
         foreach (var row in Sorted(_rows))
         {
             if (filter.Length > 0 && !row.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
-            var item = new ListViewItem(row.Name);
+            bool canOpen = row.N > 1 || HasForeignKids(map, kids, row.Name);
+            bool open = canOpen && _expanded.Contains(row.Name);
+            var item = new ListViewItem((canOpen ? (open ? "\u25BE " : "\u25B8 ") : "    ") + row.Name) { Tag = row.Name };
             item.SubItems.Add(row.Denied && row.Ws == 0 ? "?" : (row.Ws / (1024 * 1024)) + " MB");
             item.SubItems.Add(row.Cpu is double c ? (c < 0.05 ? "0%" : c.ToString("0.0") + "%") : "");
             item.SubItems.Add(row.Gpu is double gp ? (gp < 0.05 ? "0%" : gp.ToString("0.0") + "%") : "");
@@ -378,6 +447,13 @@ internal sealed class TargetsForm : Form
             if (prot || have.Contains(row.Name)) item.ForeColor = Ui.Muted;
             if (selected.Contains(row.Name)) item.Selected = true;
             _running.Items.Add(item);
+            if (open)
+            {
+                // same hierarchy as the Process tree window: this app's top processes, then their children (any name), nested
+                var mine = new HashSet<int>(map.Where(kv => string.Equals(kv.Value.Name, row.Name, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key));
+                foreach (int pid in mine.Where(p => !mine.Contains(map[p].Parent) || map[p].Parent == p).OrderBy(p => p))
+                    AddProcNode(map, kids, row.Name, pid, 1, new HashSet<int>());
+            }
         }
         _running.EndUpdate();
         if (top > 0 && top < _running.Items.Count)
@@ -389,7 +465,7 @@ internal sealed class TargetsForm : Form
     // ---------------- Task Manager style actions ----------------
 
     List<string> SelectedNames() =>
-        _running.SelectedItems.Cast<ListViewItem>().Select(i => i.Text).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        _running.SelectedItems.Cast<ListViewItem>().Where(i => i.Tag is string).Select(i => (string)i.Tag!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
     /// <summary>End task: closes every process of the selected apps (and their child processes), like Task Manager.
     /// System, security and recording processes are refused: ending them can crash Windows or the recording.</summary>
@@ -706,7 +782,7 @@ internal sealed class TargetsForm : Form
 
     void AddSelected()
     {
-        foreach (ListViewItem item in _running.SelectedItems) AddRow(item.Text);
+        foreach (ListViewItem item in _running.SelectedItems) if (item.Tag is string n) AddRow(n);
         RefreshRunning();
     }
 

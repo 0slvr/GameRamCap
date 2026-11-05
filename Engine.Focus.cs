@@ -16,6 +16,211 @@ internal sealed partial class Engine
     readonly Dictionary<string, DateTime> _exemptUntil = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, long> _learned = new(StringComparer.OrdinalIgnoreCase); // adaptive ceilings
     string _focusName = "";
+    // "Popup apps": small apps that take the foreground only briefly, again and again (Win+V, Snipping Tool, a password
+    // manager popup). Learned in memory only, never written to disk or the log. They are kept out of trimming.
+    string _fgPrev = ""; int _fgPrevPid; DateTime _fgPrevSince = DateTime.MinValue;
+    readonly Dictionary<string, int> _briefCount = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _popupNames = new(StringComparer.OrdinalIgnoreCase);
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _prefetchAt = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Called by Windows' foreground-change event (any thread). Lifts the limit of the new foreground app right away,
+    /// then reads its trimmed pages back into RAM. The regular tick still does the full bookkeeping a moment later.</summary>
+    /// <summary>Shell helpers you summon for a moment (Win+V / emoji panel, Start menu, search). They get a quick
+    /// "wake up" when they appear and are trimmed again right after you leave them, instead of waiting for the normal grace time.</summary>
+    internal static readonly HashSet<string> BurstApps = new(StringComparer.OrdinalIgnoreCase)
+        { "TextInputHost", "StartMenuExperienceHost", "SearchHost" };
+    string _lastFgEvent = "";
+    string _dbgSig = "";
+
+    /// <summary>Diagnostics for Win+V: logs TextInputHost's windows (and which window is in front) only when they change.</summary>
+    long _dbgKeyTicks;
+    void DebugInputHost()
+    {
+        if (!Config.DebugInputHost) return;
+        try
+        {
+            long k = Native.LastInputPanelKeyTicks;
+            if (k != _dbgKeyTicks) { _dbgKeyTicks = k; Logger.Write("InputHost: Win+V/emoji/voice hotkey pressed"); }
+
+            var parts = new List<string>();
+            long wsMb = 0;
+            foreach (var p in Process.GetProcessesByName("TextInputHost"))
+            {
+                try { parts.Add($"pid{p.Id} " + string.Join("", Native.DescribeWindows(p.Id))); wsMb = p.WorkingSet64 / MB; }
+                finally { p.Dispose(); }
+            }
+            var fgw = Native.GetForegroundWindow();
+            Native.GetWindowThreadProcessId(fgw, out uint fpid);
+            string fgName = "";
+            try { using var fp = Process.GetProcessById((int)fpid); fgName = fp.ProcessName; } catch { }
+            string sig = string.Join(" || ", parts) + $"  FOREGROUND={fgName}";   // ws is not part of it: it changes all the time
+            if (sig == _dbgSig) return;
+            _dbgSig = sig;
+            Logger.Write("InputHost windows: " + (parts.Count == 0 ? "(TextInputHost not running)" : "") + sig + $"  ws={wsMb}MB");
+        }
+        catch { }
+    }
+    DateTime _inputHostSeen = DateTime.UtcNow, _recycleCheck = DateTime.MinValue;
+
+    /// <summary>Closes an idle, bloated TextInputHost (never while it shows a window, and only after 30 s without it in front). Windows relaunches it on demand, small again.</summary>
+    void RecycleInputHost(string fg, DateTime now)
+    {
+        if (string.Equals(fg, "TextInputHost", StringComparison.OrdinalIgnoreCase)) { _inputHostSeen = now; return; }
+        int limit = Config.InputHostRecycleMB;
+        // The windows of TextInputHost look the same open or closed and it never becomes the foreground app (see the
+        // diagnostics log), so the two checks below cannot tell. The hotkey press is the signal: stay away from it
+        // for InputHostIdleSeconds after the last Win+V / emoji / voice-typing press.
+        long k = Native.LastInputPanelKeyTicks;
+        if (k != 0) { var kd = new DateTime(k, DateTimeKind.Utc); if (kd > _inputHostSeen) _inputHostSeen = kd; }
+        if (limit <= 0 || (now - _recycleCheck).TotalSeconds < 15) return;
+        if ((now - _inputHostSeen).TotalSeconds < Math.Max(30, Config.InputHostIdleSeconds))
+        {
+            RecycleWhy($"the app started, or Win+V was pressed, less than {Math.Max(30, Config.InputHostIdleSeconds)} s ago");
+            return;
+        }
+        _recycleCheck = now;
+        foreach (var p in Process.GetProcessesByName("TextInputHost"))
+        {
+            try
+            {
+                long ws = p.WorkingSet64;
+                if (ws < limit * 1024L * 1024) { RecycleWhy($"TextInputHost is under the {limit} MB limit"); continue; }
+                // Fallback that does not depend on any window class name (a Windows update may rename them): any window activity of the host.
+                long la = Native.LastActivityTicks(p.Id);
+                if (la != 0 && (now - new DateTime(la, DateTimeKind.Utc)).TotalSeconds < Math.Max(30, Config.InputHostIdleSeconds)) { RecycleWhy($"it showed window activity less than {Math.Max(30, Config.InputHostIdleSeconds)} s ago"); return; }
+                if (Native.IsInputPanelOpen(p) || Native.HasVisibleWindow(p.Id)) { RecycleWhy("the Win+V panel is open"); _inputHostSeen = now; return; }   // Win+V / emoji / keyboard is open right now
+                p.Kill();
+                Logger.Write($"Recycled TextInputHost (Win+V host): it was {ws / MB} MB and idle. Windows starts a fresh one when needed.");
+                _recycleWhy = "";
+            }
+            catch (Exception ex) { RecycleWhy("closing it failed: " + ex.Message); }
+            finally { p.Dispose(); }
+        }
+    }
+
+    /// <summary>The Win+V panel is "the app in focus" while one of TextInputHost's threads has keyboard focus in a CoreComponentInputSource
+    /// window (found with the diagnostics log; the foreground window never changes for it). Polled every tick; the focus event
+    /// (see OnPanelOpened) lifts the limit even faster at the moment it opens.</summary>
+    static bool InputPanelOpen()
+    {
+        foreach (var p in Process.GetProcessesByName("TextInputHost"))
+        {
+            try { if (Native.IsInputPanelOpen(p)) return true; }
+            finally { p.Dispose(); }
+        }
+        return false;
+    }
+    bool _panelWasOpen;
+
+    /// <summary>Called the moment the Win+V panel takes focus: lifts TextInputHost's ceiling at once, like OnForeground does for a normal app.</summary>
+    public void OnPanelOpened()
+    {
+        if (!Enabled || !Config.Enabled) return;
+        lock (Gate)
+        {
+            if (_groups.TryGetValue("TextInputHost", out var g)) { g.Holding = false; g.CritDone = false; }
+            if (_limited.Count > 0) ReleaseByName("TextInputHost");
+        }
+        if (Config.DebugInputHost) Logger.Write("InputHost: panel opened - TextInputHost limit lifted");
+    }
+
+    DateTime _panelKeyAt = DateTime.MinValue;
+    /// <summary>Called the moment Win+V (or Win+. / Win+; / Win+H) is pressed, BEFORE the panel opens: lifts TextInputHost's limit and starts
+    /// reading its trimmed pages back into RAM in parallel with Windows creating the window, so the panel opens without waiting for the disk.</summary>
+    public void OnPanelKeyPressed()
+    {
+        if (!Enabled || !Config.Enabled || !Config.WakeWinVOnKey) return;
+        var now = DateTime.UtcNow;
+        if ((now - _panelKeyAt).TotalMilliseconds < 500) return;   // key repeat
+        _panelKeyAt = now;
+        lock (Gate)
+        {
+            if (_groups.TryGetValue("TextInputHost", out var g)) { g.Holding = false; g.CritDone = false; }
+            if (_limited.Count > 0) ReleaseByName("TextInputHost");
+        }
+        double freePct = Native.FreeRamPercent();
+        if (freePct >= 0 && freePct < Config.PrefetchMinFreePercent) return;   // limit already lifted above; just do not pull more pages in
+        long budget = Math.Max(1, Config.PrefetchMaxMB) * 1024L * 1024;
+        foreach (var kv in Native.ProcessMap())
+        {
+            if (budget <= 0) break;
+            if (!string.Equals(kv.Value.Name, "TextInputHost", StringComparison.OrdinalIgnoreCase)) continue;
+            budget -= Native.Prefetch(kv.Key, budget);
+        }
+        if (Config.DebugInputHost) Logger.Write("InputHost: Win+V pressed - limit lifted and pages prefetched before the panel opened");
+    }
+
+    string _recycleWhy = "";
+    /// <summary>Logs (only when the reason changes) why an oversized TextInputHost was not closed yet, so the log explains a "nothing happens".</summary>
+    void RecycleWhy(string why)
+    {
+        if (why == _recycleWhy) return;
+        _recycleWhy = why;
+        Logger.Write("InputHost recycler: waiting - " + why);
+    }
+
+    void TrimBurstLater(string name)
+    {
+        Task.Run(async () =>
+        {
+            foreach (int ms in new[] { 1200, 3800 })   // twice: pages touched while it was closing go back too
+            {
+                await Task.Delay(ms);
+                if (!Enabled || !Config.Enabled) return;
+                var (_, now) = ForegroundProc();
+                if (string.Equals(now, name, StringComparison.OrdinalIgnoreCase)) return;   // opened again: leave it
+                foreach (var kv in Native.ProcessMap())
+                    if (string.Equals(kv.Value.Name, name, StringComparison.OrdinalIgnoreCase)) Native.Trim(kv.Key);
+            }
+        });
+    }
+
+    public void OnForeground()
+    {
+        if (!Enabled || !Config.Enabled) return;
+        var (pid, name) = ForegroundProc();
+        if (pid == 0 || name.Length == 0 || string.Equals(name, "GameRamCap", StringComparison.OrdinalIgnoreCase)) return;
+        string prev = _lastFgEvent;
+        _lastFgEvent = name;
+        if (prev.Length > 0 && !string.Equals(prev, name, StringComparison.OrdinalIgnoreCase) && false && BurstApps.Contains(prev)) TrimBurstLater(prev);   // disabled: trimming right after use caused stutter
+        lock (Gate)
+        {
+            if (!_exempt.Contains(name) && !IsException(name))
+            {
+                if (_groups.TryGetValue(name, out var g)) { g.Holding = false; g.CritDone = false; }
+                if (_limited.Count > 0) ReleaseByName(name);
+            }
+        }
+        if (!Config.PrefetchApps) return;
+        var now = DateTime.UtcNow;
+        if (_prefetchAt.TryGetValue(name, out var last) && (now - last).TotalSeconds < (BurstApps.Contains(name) ? 3 : 20)) return;   // not again and again
+        _prefetchAt[name] = now;
+        double free = Native.FreeRamPercent();
+        if (free >= 0 && free < Config.PrefetchMinFreePercent) return;   // RAM is really short: do not pull more in
+        long budget = Math.Max(1, Config.PrefetchMaxMB) * 1024L * 1024;
+        foreach (var kv in Native.ProcessMap())
+        {
+            if (budget <= 0) break;
+            if (!string.Equals(kv.Value.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
+            budget -= Native.Prefetch(kv.Key, budget);
+        }
+    }
+
+    void LearnPopupApps(int fgPid, string fg, DateTime now)
+    {
+        if (fg == _fgPrev) return;
+        if (_fgPrev.Length > 0 && (now - _fgPrevSince).TotalSeconds < 8 && !_popupNames.Contains(_fgPrev)
+            && !ProtectedFull.Contains(_fgPrev) && !IsException(_fgPrev))
+        {
+            int n = _briefCount.TryGetValue(_fgPrev, out var v) ? v + 1 : 1;
+            _briefCount[_fgPrev] = n;
+            // seen briefly 3 times, and really small (a normal app you only glance at is not a popup)
+            if (n >= 3 && Native.GetMemory(_fgPrevPid, out long ws, out _) && ws < 80L * 1024 * 1024)
+                _popupNames.Add(_fgPrev);
+        }
+        _fgPrev = fg; _fgPrevPid = fgPid; _fgPrevSince = now;
+    }
     bool _gateWasOpen;
     DateTime _failReset = DateTime.UtcNow;
 
@@ -182,13 +387,37 @@ internal sealed partial class Engine
         // A process that was refused once (busy, transient error) gets another chance every 5 minutes.
         if ((now - _failReset).TotalMinutes >= 5) { _failReset = now; _failLogged.Clear(); }
         TrackFullscreenGame(fg, now);
+        RecycleInputHost(fg, now);
+        DebugInputHost();
 
         // Names that count as "in focus" right now: the foreground app + any target it stands for.
         var focusNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (fg.Length > 0) focusNames.Add(fg);
+        if (Config.LearnPopupApps)
+        {
+            LearnPopupApps(fgPid, fg, now);
+            foreach (var n in _popupNames) focusNames.Add(n);
+        }
         foreach (var t in Config.Targets)
             if (!string.IsNullOrWhiteSpace(t.Exe) && IsFocused(t, fg)) focusNames.Add(t.Exe);
         foreach (var n in TreeNames(fgPid, now)) focusNames.Add(n);
+        bool panelOpen = InputPanelOpen();
+        if (panelOpen) focusNames.Add("TextInputHost");   // the Win+V panel counts as the app in use while it is open
+        if (panelOpen != _panelWasOpen)
+        {
+            _panelWasOpen = panelOpen;
+            if (Config.DebugInputHost) Logger.Write(panelOpen ? "InputHost: panel in focus" : "InputHost: panel closed - TextInputHost is a background app again");
+        }
+        if (Config.RecentActivitySeconds > 0)
+        {
+            var recent = Native.RecentlyActivePids(Config.RecentActivitySeconds);
+            if (recent.Count > 0)
+            {
+                var pmap = Native.ProcessMap();
+                foreach (int rp in recent)
+                    if (pmap.TryGetValue(rp, out var rinfo)) focusNames.Add(rinfo.Name);
+            }
+        }
 
         // A newly focused app gets its ceiling lifted right now, before the (slower) scan below would do it.
         foreach (var n in focusNames)

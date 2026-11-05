@@ -167,6 +167,16 @@ sealed class TrayContext : ApplicationContext
         var waiter = new Thread(() => { while (true) { showEv.WaitOne(); _showRequested = true; } }) { IsBackground = true };
         waiter.Start();
 
+        // React to a window switch immediately (instead of waiting for the next 400 ms tick) and warm the new app up.
+        Native.WatchForeground(() => Task.Run(() => { try { _engine.OnForeground(); } catch (Exception ex) { LogOnce("Foreground event", ex); } }));
+        // Only needed to keep the Win+V host safe from the recycler (and for the diagnostics): no hook when both are off.
+        // Always on: the Win+V key press itself wakes the host up (limit lifted + pages read back) before the panel even shows.
+        Native.OnPanelKey = () => Task.Run(() => { try { _engine.OnPanelKeyPressed(); } catch (Exception ex) { LogOnce("Panel key", ex); } });
+        Native.WatchInputPanelKeys(_engine.Config.DebugInputHost);
+        if (_engine.Config.DebugInputHost) InputHostProbe.Start();
+        Native.WatchWindowActivity(() => Task.Run(() => { try { _engine.OnPanelOpened(); } catch (Exception ex) { LogOnce("Panel event", ex); } }));
+        Logger.Write("InputHost: the Win+V host (TextInputHost) is limited like a background app, and free while its panel is open.");
+
         _timer = new Timer { Interval = 400 };
         _timer.Tick += (_, _) => OnTick();
         _timer.Start();
@@ -338,6 +348,10 @@ sealed class TrayContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         _timer.Stop();
+        Native.StopWatchingForeground();
+        Native.StopWatchingInputPanelKeys();
+        InputHostProbe.Stop();
+        Native.StopWatchingWindowActivity();
         _main?.Shutdown();
         lock (_engine.Gate) _engine.Dispose(); // restores every limited process (waits for a running tick)
         _tray.Visible = false;

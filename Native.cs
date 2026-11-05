@@ -258,6 +258,325 @@ internal static class Native
         finally { CloseHandle(h); }
     }
 
+    // ---- Foreground change event + prefetch (bring a trimmed app's pages back before you need them) ----
+    const uint PROCESS_VM_OPERATION = 0x0008;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MEMORY_BASIC_INFORMATION
+    {
+        public IntPtr BaseAddress, AllocationBase;
+        public uint AllocationProtect;
+        public ushort PartitionId;
+        public nuint RegionSize;
+        public uint State, Protect, Type;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct WIN32_MEMORY_RANGE_ENTRY { public IntPtr VirtualAddress; public nuint NumberOfBytes; }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern nuint VirtualQueryEx(IntPtr process, IntPtr address, out MEMORY_BASIC_INFORMATION info, nuint length);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool PrefetchVirtualMemory(IntPtr process, nuint entries, [In] WIN32_MEMORY_RANGE_ENTRY[] ranges, uint flags);
+
+    /// <summary>Asks Windows to read a process's committed pages back into RAM (from the standby cache, the page file or disk)
+    /// in large efficient batches. Stops after maxBytes. Returns how many bytes were requested.</summary>
+    public static long Prefetch(int pid, long maxBytes)
+    {
+        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_VM_OPERATION, false, pid);
+        if (h == IntPtr.Zero) return 0;
+        try
+        {
+            var list = new List<WIN32_MEMORY_RANGE_ENTRY>();
+            long total = 0;
+            long addr = 0;
+            const long MaxAddr = 0x7FFFFFFEFFFF;
+            int guard = 0;
+            while (addr < MaxAddr && total < maxBytes && guard++ < 200000)
+            {
+                if (VirtualQueryEx(h, (IntPtr)addr, out var mbi, (nuint)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == 0) break;
+                long size = (long)mbi.RegionSize;
+                if (size <= 0) break;
+                bool ok = mbi.State == 0x1000                       // MEM_COMMIT
+                    && (mbi.Protect & 0x101) == 0                   // not PAGE_NOACCESS / PAGE_GUARD
+                    && mbi.Protect != 0
+                    && mbi.Type != 0x40000                      // not MEM_MAPPED (device / shared memory)
+                    && size <= maxBytes - total;
+                if (ok) { list.Add(new WIN32_MEMORY_RANGE_ENTRY { VirtualAddress = mbi.BaseAddress, NumberOfBytes = (nuint)size }); total += size; }
+                long next = (long)mbi.BaseAddress + size;
+                if (next <= addr) break;
+                addr = next;
+            }
+            for (int i = 0; i < list.Count; i += 256)
+            {
+                var chunk = list.GetRange(i, Math.Min(256, list.Count - i)).ToArray();
+                try { PrefetchVirtualMemory(h, (nuint)chunk.Length, chunk, 0); } catch { return total; }
+            }
+            return total;
+        }
+        finally { CloseHandle(h); }
+    }
+
+    delegate void WinEventProc(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventProc proc, uint pid, uint thread, uint flags);
+
+    [DllImport("user32.dll")]
+    static extern bool UnhookWinEvent(IntPtr hook);
+
+    static WinEventProc? _fgProc;   // kept in a field so the garbage collector cannot free it while Windows still calls it
+    static IntPtr _fgHook;
+
+    /// <summary>Calls onChange the moment Windows switches the foreground window (no waiting for the next engine tick).
+    /// Must be called from a thread that pumps messages (the UI thread).</summary>
+    public static void WatchForeground(Action onChange)
+    {
+        if (_fgHook != IntPtr.Zero) return;
+        _fgProc = (_, _, hwnd, idObject, _, _, _) => { if (idObject == 0 && hwnd != IntPtr.Zero) { try { onChange(); } catch { } } };
+        _fgHook = SetWinEventHook(0x0003 /* EVENT_SYSTEM_FOREGROUND */, 0x0003, IntPtr.Zero, _fgProc, 0, 0, 0x0000 /* OUTOFCONTEXT */);
+    }
+
+    public static void StopWatchingForeground()
+    {
+        if (_fgHook != IntPtr.Zero) { UnhookWinEvent(_fgHook); _fgHook = IntPtr.Zero; }
+    }
+
+    // ---- Win+V / Win+. / Win+; / Win+H detector ----
+    // The panel's windows look the same open or closed (cloak=2 all the time) and it never takes the foreground, so the only
+    // reliable "it was just summoned" signal is the key combo itself. The hook only checks "Win held + one of these keys" and
+    // stores a timestamp. No key is logged or kept. It passes every key on to Windows untouched.
+    delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr SetWindowsHookExW(int idHook, LowLevelKeyboardProc fn, IntPtr hMod, uint threadId);
+
+    [DllImport("user32.dll")]
+    static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    static extern short GetAsyncKeyState(int vk);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr GetModuleHandleW(string? name);
+
+    static LowLevelKeyboardProc? _msProc;
+    static IntPtr _msHook;
+    static long _markTicks;
+    static volatile string _markLabel = "";
+    /// <summary>Diagnostics only: last Esc / Enter / mouse click within 60 s after a Win+V press (a possible "panel closed" moment).</summary>
+    public static long LastPanelMarkTicks => Interlocked.Read(ref _markTicks);
+    public static string LastPanelMarkLabel => _markLabel;
+    static void Mark(string label) { _markLabel = label; Interlocked.Exchange(ref _markTicks, DateTime.UtcNow.Ticks); }
+    static bool NearPanelKey() { long k = Interlocked.Read(ref _panelKeyTicks); return k != 0 && DateTime.UtcNow.Ticks - k < TimeSpan.TicksPerSecond * 60; }
+
+    static LowLevelKeyboardProc? _kbProc;   // kept in a field so the garbage collector cannot free it
+    static IntPtr _kbHook;
+    static long _panelKeyTicks;
+    /// <summary>Raised (from the keyboard hook, so keep it fast) the instant Win+V / Win+. / Win+; / Win+H is pressed.</summary>
+    public static Action? OnPanelKey;
+
+    /// <summary>UTC ticks of the last Win+V / Win+. / Win+; / Win+H press, or 0 if none yet.</summary>
+    public static long LastInputPanelKeyTicks => Interlocked.Read(ref _panelKeyTicks);
+
+    /// <summary>Must be called from a thread that pumps messages (the UI thread).</summary>
+    public static void WatchInputPanelKeys(bool mouseMarks = false)
+    {
+        if (_kbHook != IntPtr.Zero) return;
+        _kbProc = (nCode, wParam, lParam) =>
+        {
+            try
+            {
+                int msg = (int)wParam;
+                if (nCode >= 0 && (msg == 0x0100 || msg == 0x0104))   // WM_KEYDOWN / WM_SYSKEYDOWN
+                {
+                    int vk = Marshal.ReadInt32(lParam);               // KBDLLHOOKSTRUCT.vkCode
+                    if ((vk == 0x56 || vk == 0xBE || vk == 0xBA || vk == 0x48)   // V . ; H
+                        && ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) != 0)   // left or right Win held
+                    {
+                        Interlocked.Exchange(ref _panelKeyTicks, DateTime.UtcNow.Ticks);
+                        try { OnPanelKey?.Invoke(); } catch { }
+                    }
+                    else if ((vk == 0x1B || vk == 0x0D) && NearPanelKey())   // Esc / Enter shortly after Win+V
+                        Mark(vk == 0x1B ? "Esc" : "Enter");
+                }
+            }
+            catch { }
+            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        };
+        _kbHook = SetWindowsHookExW(13 /* WH_KEYBOARD_LL */, _kbProc, GetModuleHandleW(null), 0);
+        if (mouseMarks)
+        {
+            _msProc = (nCode, wParam, lParam) =>
+            {
+                try
+                {
+                    int msg = (int)wParam;
+                    if (nCode >= 0 && (msg == 0x0201 || msg == 0x0204) && NearPanelKey()) Mark("click");   // left / right button down
+                }
+                catch { }
+                return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+            };
+            _msHook = SetWindowsHookExW(14 /* WH_MOUSE_LL */, _msProc, GetModuleHandleW(null), 0);
+        }
+    }
+
+    public static void StopWatchingInputPanelKeys()
+    {
+        if (_kbHook != IntPtr.Zero) { UnhookWindowsHookEx(_kbHook); _kbHook = IntPtr.Zero; }
+        if (_msHook != IntPtr.Zero) { UnhookWindowsHookEx(_msHook); _msHook = IntPtr.Zero; }
+    }
+
+    // ---- Window activity of ANY process (no class names, nothing app-specific) ----
+    // Windows raises these events for every app: a window shown, uncloaked, cloaked, or given focus. The diagnostics log showed that the
+    // Win+V host raises them at both open and close, whatever its internal window classes are called. So "this process just did something
+    // visible" works for new tools and survives Windows updates. It marks transitions, not how long a window stays open.
+    static WinEventProc? _actProc;
+    static readonly List<IntPtr> _actHooks = new();
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> _actTicks = new();
+
+    /// <summary>Must be called from a thread that pumps messages (the UI thread).</summary>
+    static Action? _onPanelOpened;
+
+    /// <param name="onPanelOpened">Called (on the UI thread) the moment the Win+V panel takes keyboard focus.</param>
+    public static void WatchWindowActivity(Action? onPanelOpened = null)
+    {
+        if (_actProc != null) return;
+        _onPanelOpened = onPanelOpened;
+        _actProc = (_, evt, hwnd, idObject, _, _, _) =>
+        {
+            try
+            {
+                if (hwnd == IntPtr.Zero) return;
+                if (evt != 0x0003 && evt != 0x8005 && idObject != 0) return;   // window-level events only (focus may come from a child control)
+                if (evt == 0x8005 && _onPanelOpened != null)   // focus moved into the Win+V panel: lift its limit right now
+                {
+                    var cls = new StringBuilder(80);
+                    GetClassNameW(hwnd, cls, 80);
+                    if (cls.ToString() == "Windows.UI.Core.CoreComponentInputSource") _onPanelOpened();
+                }
+                GetWindowThreadProcessId(hwnd, out uint pid);
+                if (pid != 0) _actTicks[(int)pid] = DateTime.UtcNow.Ticks;
+            }
+            catch { }
+        };
+        // foreground | show | focus | cloaked + uncloaked
+        foreach (var (a, b) in new (uint, uint)[] { (0x0003, 0x0003), (0x8002, 0x8002), (0x8005, 0x8005), (0x8017, 0x8018) })
+            _actHooks.Add(SetWinEventHook(a, b, IntPtr.Zero, _actProc, 0, 0, 0 /* OUTOFCONTEXT */));
+    }
+
+    public static void StopWatchingWindowActivity()
+    {
+        foreach (var h in _actHooks) if (h != IntPtr.Zero) UnhookWinEvent(h);
+        _actHooks.Clear();
+        _actProc = null;
+    }
+
+    /// <summary>Process ids that showed / uncloaked / cloaked / focused a window within the last <paramref name="seconds"/> seconds.</summary>
+    public static List<int> RecentlyActivePids(double seconds)
+    {
+        long now = DateTime.UtcNow.Ticks, limit = now - (long)(seconds * TimeSpan.TicksPerSecond);
+        var list = new List<int>();
+        foreach (var kv in _actTicks)
+        {
+            if (kv.Value >= limit) list.Add(kv.Key);
+            else if (now - kv.Value > TimeSpan.TicksPerMinute * 5) _actTicks.TryRemove(kv.Key, out _);   // forget old entries
+        }
+        return list;
+    }
+
+    /// <summary>UTC ticks of the last window activity of a process, or 0 if none seen.</summary>
+    public static long LastActivityTicks(int pid) => _actTicks.TryGetValue(pid, out var t) ? t : 0;
+
+    // ---- Is the Win+V panel open right now? ----
+    // Found with the diagnostics log: while the panel is open, a TextInputHost thread has keyboard focus inside a
+    // "Windows.UI.Core.CoreComponentInputSource" window; closed (Esc / click outside), the focus is a plain "Windows.UI.Core.CoreWindow".
+    // The foreground window never changes and the window flags (visible / cloak) of TextInputHost look the same either way.
+    [StructLayout(LayoutKind.Sequential)] struct GuiRect { public int L, T, R, B; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct GuiThreadInfo
+    {
+        public int cbSize, flags;
+        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
+        public GuiRect rcCaret;
+    }
+
+    [DllImport("user32.dll", EntryPoint = "GetGUIThreadInfo")]
+    static extern bool GetGuiThreadInfoNative(uint idThread, ref GuiThreadInfo info);
+
+    /// <summary>True if one of the process's threads has keyboard focus in a CoreComponentInputSource window (panel open).</summary>
+    public static bool IsInputPanelOpen(System.Diagnostics.Process p)
+    {
+        try
+        {
+            foreach (System.Diagnostics.ProcessThread t in p.Threads)
+            {
+                var gi = new GuiThreadInfo { cbSize = Marshal.SizeOf<GuiThreadInfo>() };
+                if (!GetGuiThreadInfoNative((uint)t.Id, ref gi) || gi.hwndFocus == IntPtr.Zero) continue;
+                var cls = new StringBuilder(80);
+                GetClassNameW(gi.hwndFocus, cls, 80);
+                if (cls.ToString() == "Windows.UI.Core.CoreComponentInputSource") return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    // ---- Is a process showing a real window right now? (hidden / cloaked UWP windows do not count) ----
+    [DllImport("user32.dll")]
+    static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("dwmapi.dll")]
+    static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
+
+    /// <summary>True if the process owns a visible, not-cloaked top-level window (e.g. the Win+V flyout is open).</summary>
+    public static bool HasVisibleWindow(int pid)
+    {
+        bool found = false;
+        EnumWindows((hwnd, _) =>
+        {
+            GetWindowThreadProcessId(hwnd, out uint p);
+            if (p != (uint)pid || !IsWindowVisible(hwnd)) return true;
+            int cloaked = 0;
+            DwmGetWindowAttribute(hwnd, 14 /* DWMWA_CLOAKED */, out cloaked, sizeof(int));
+            if (cloaked == 0 && GetWindowRect(hwnd, out var r) && r.Right - r.Left > 1 && r.Bottom - r.Top > 1) { found = true; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetClassNameW(IntPtr hwnd, StringBuilder name, int max);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
+
+    /// <summary>Diagnostics: one line per top-level window of a process (class, title, visible, cloaked, size).</summary>
+    public static List<string> DescribeWindows(int pid)
+    {
+        var list = new List<string>();
+        EnumWindows((hwnd, _) =>
+        {
+            GetWindowThreadProcessId(hwnd, out uint p);
+            if (p != (uint)pid) return true;
+            var cls = new StringBuilder(80); GetClassNameW(hwnd, cls, 80);
+            var txt = new StringBuilder(80); GetWindowTextW(hwnd, txt, 80);
+            int cloaked = 0; DwmGetWindowAttribute(hwnd, 14, out cloaked, sizeof(int));
+            GetWindowRect(hwnd, out var r);
+            list.Add($"[{cls}|{txt}|vis={(IsWindowVisible(hwnd) ? 1 : 0)}|cloak={cloaked}|{r.Right - r.Left}x{r.Bottom - r.Top}]");
+            return true;
+        }, IntPtr.Zero);
+        list.Sort(StringComparer.Ordinal);
+        return list;
+    }
+
     // ---- Memory priority (Windows decides which pages to take first when RAM is short) ----
     const uint PROCESS_SET_INFORMATION = 0x0200;
     const int ProcessMemoryPriority = 0;

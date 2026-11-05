@@ -26,7 +26,7 @@ internal sealed partial class Engine : IDisposable
 
     // Shell helpers that may now be trimmed (they grow over time). They are still ignored for game detection
     // and for the focus-tree walk (see ProtectedFull), so the Start menu / search never counts as a game.
-    internal static readonly string[] Relaxed = { "explorer", "TextInputHost", "StartMenuExperienceHost", "SearchHost" };
+    internal static readonly string[] Relaxed = { "explorer", "TextInputHost" };   // TextInputHost (Win+V) is handled like a normal app: "in focus" while the panel is open (see InputPanelOpen); Start and Search stay protected
 
     /// <summary>What the engine refuses to trim: ProtectedFull minus the Relaxed shell helpers.</summary>
     internal static readonly HashSet<string> Protected = new(ProtectedFull.Except(Relaxed, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);

@@ -105,6 +105,19 @@ internal sealed class Config
     public bool ThreadMemoryPriority { get; set; } = false;
     /// <summary>Remember, per app, the lowest ceiling that was safe (kept in learned.json next to config.json).</summary>
     public bool LearnFloors { get; set; } = true;
+    /// <summary>Hold mode: the process that plays audio gets this ceiling (MB) while RAM is under pressure, instead of no ceiling at all.
+    /// Generous on purpose, so playback is not affected. 0 = never limit it (old behaviour).</summary>
+    public int AudioCapMB { get; set; } = 160;
+    /// <summary>Hold mode: find out what a background process really needs (trim it once, see what it pulls back) and cap it at that
+    /// x NeedMargin, instead of guessing with percentages and learned floors.</summary>
+    public bool MeasureNeed { get; set; } = true;
+    /// <summary>Margin on top of the measured need (1.3 = 30 % extra).</summary>
+    public double NeedMargin { get; set; } = 1.3;
+    /// <summary>Absolute ceiling (MB) for a measured need, and raises never go past twice this. Stops one busy process (Spotify's 1.9 GB one) from
+    /// "needing" 800 MB. 0 = no limit.</summary>
+    public int NeedMaxMB { get; set; } = 128;
+    /// <summary>Seconds to wait after the trim before reading what the process pulled back.</summary>
+    public double NeedProbeSeconds { get; set; } = 4;
     /// <summary>Sets the limit for apps that are not in the Apps list (used by Hard mode and the Custom level).</summary>
     public void SetDefaultLimit(int mb, bool fixedLimit)
     {
@@ -132,6 +145,44 @@ internal sealed class Config
     public List<string> Exceptions { get; set; } = new();
     /// <summary>Seconds to wait after leaving a target app before its limit comes back (avoids flicker on Alt+Tab).</summary>
     public double RelimitDelaySeconds { get; set; } = 1.5;
+    /// <summary>Small apps you open briefly again and again (Win+V, Snipping Tool, a password manager popup...) are learned
+    /// while GameRamCap runs and never trimmed, so they open instantly. Set false to turn this off.</summary>
+    /// <summary>The moment an app comes to the front, its limit is lifted at once and its pages are read back into RAM
+    /// in the background, so a trimmed app wakes up fast. Set false to turn this off.</summary>
+    public bool PrefetchApps { get; set; } = false;
+    /// <summary>Most MB read back into RAM per app when it is woken up (PrefetchApps and the Win+V wake-up). Lower = lighter on the disk and RAM.</summary>
+    public int PrefetchMaxMB { get; set; } = 96;
+    /// <summary>Wake-ups are skipped while free RAM is below this percent, so they never add pressure on a full machine.</summary>
+    public int PrefetchMinFreePercent { get; set; } = 12;
+    /// <summary>Win+V / Win+. / Win+; / Win+H: the moment the keys are pressed (before the panel shows) the Win+V host is freed and read back into RAM.</summary>
+    public bool WakeWinVOnKey { get; set; } = true;
+    /// <summary>Win+V / emoji host (TextInputHost) grows over time. When it is idle (not in front for 10 s) and bigger than
+    /// this many MB, it is closed; Windows starts a fresh small one the next time you need it. 0 = never.</summary>
+    /// <summary>Temporary diagnostics: logs the windows of the Win+V host (TextInputHost) whenever they change.</summary>
+    public bool DebugInputHost { get; set; } = false;
+    /// <summary>Diagnostics: writes a log line whenever a background process gets a ceiling, when that ceiling is raised or lowered, and when an
+    /// audio-playing process is freed from its ceiling. Turn off once you have the answer you need.</summary>
+    public bool LogHolds { get; set; } = false;
+    /// <summary>Processes at least this big (MB, size when first held) are never squeezed below BigProcKeepPercent of that size, at any level.
+    /// Stops a huge process (Spotify at 1.3 GB squeezed to 12 MB) from thrashing the disk. 0 = off.</summary>
+    public int BigProcMB { get; set; } = 300;
+    public int BigProcKeepPercent { get; set; } = 20;
+    /// <summary>A big process (see BigProcMB) that page-faults is given room back, but never more than this percent of the ceiling it was first
+    /// held at (200 = twice). Without it the "give room back" step walks the ceiling all the way to the original size within seconds. 0 = no limit.</summary>
+    public int BigProcMaxGrowPercent { get; set; } = 200;
+    /// <summary>Smart mode gives a held app room back only when its page faults come with real disk reads (system "Pages Input/sec" at or above
+    /// HardFaultPagesPerSec). Faults that are served from RAM (soft faults) are harmless and no longer undo the squeeze. Set false for the old behaviour.</summary>
+    public bool SmartFaultCheck { get; set; } = true;
+    public int HardFaultPagesPerSec { get; set; } = 30;
+    /// <summary>Page faults per second per resident MB above which a held process counts as starved even when the disk is idle (soft faults burn CPU). 0 = off.</summary>
+    public int ThrashFaultsPerMB { get; set; } = 60;
+    public int InputHostRecycleMB { get; set; } = 0;
+    /// <summary>TextInputHost is never closed until this many seconds have passed since the last Win+V / Win+. / Win+; / Win+H press.</summary>
+    public int InputHostIdleSeconds { get; set; } = 120;
+    /// <summary>A process that just showed, uncloaked or focused a window (any app, not only the foreground one) is treated as in use for this many
+    /// seconds, so popups and helper apps you summon for a moment are not limited. 0 = off.</summary>
+    public double RecentActivitySeconds { get; set; } = 5;
+    public bool LearnPopupApps { get; set; } = false;
     /// <summary>Limit the target apps all the time (from the moment they start), not only while a game runs.</summary>
     public bool AlwaysLimit { get; set; } = true;
     /// <summary>Seconds a game must stay in the foreground before limits are applied.</summary>
@@ -192,7 +243,7 @@ internal static class ConfigStore
     static string LastGoodPath => Path.Combine(Dir, "config.lastgood.json");
 
     /// <summary>Focus mode is always on; it is no longer a user option.</summary>
-    static Config Force(Config c) { c.FocusMode = true; return c; }
+    static Config Force(Config c) { c.FocusMode = true; c.InputHostRecycleMB = 0; c.DebugInputHost = false; return c; }   // the Win+V probe floods the UI thread with window events: never on   // closing TextInputHost is retired: it is limited like any background app instead
 
     public static Config Load()
     {

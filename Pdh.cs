@@ -145,3 +145,59 @@ internal static class GpuUsage
         lock (Lock) { _q?.Dispose(); _q = null; _cache = null; _failed = false; _last = DateTime.MinValue; }
     }
 }
+
+/// <summary>System-wide "Pages Input/sec": pages Windows really READ FROM DISK to resolve hard faults. A process can show tens of thousands of
+/// page faults per second that are all "soft" (the page was still in RAM on the standby list): those never stutter anything. If this counter is
+/// low while an app faults heavily, the faults are soft. It is system-wide, not per process, so when it is high we stay cautious and treat the
+/// faults as real. If the counter is not available, everything is treated as real (the old behaviour).</summary>
+internal static class PagingMonitor
+{
+    static readonly object Lock = new();
+    static PdhQuery? _q;
+    static IntPtr _c;
+    static bool _failed;
+    static double? _value;
+    static DateTime _at = DateTime.MinValue;
+
+    /// <summary>Takes a sample (at most about once a second). Call it once per scan.</summary>
+    public static void Sample()
+    {
+        lock (Lock)
+        {
+            if (_failed) return;
+            var now = DateTime.UtcNow;
+            if (_q == null)
+            {
+                _q = PdhQuery.TryOpen();
+                _c = _q?.Add(@"\Memory\Pages Input/sec") ?? IntPtr.Zero;
+                if (_q == null || _c == IntPtr.Zero)
+                {
+                    _q?.Dispose(); _q = null; _failed = true;
+                    Logger.Write("Soft/hard fault check: the Pages Input/sec counter is not available, every page fault counts as real.");
+                    return;
+                }
+                _q.Collect();
+                _at = now;
+                return;
+            }
+            if ((now - _at).TotalMilliseconds < 900) return;
+            if (!_q.Collect()) return;
+            _at = now;
+            _value = _q.Value(_c);
+        }
+    }
+
+    /// <summary>Last measured disk page reads per second, or null when unknown.</summary>
+    public static double? Last { get { lock (Lock) return _value; } }
+
+    /// <summary>True when the disk is really being read for paging (or when we cannot tell): page faults may be causing stutter.</summary>
+    public static bool IsHard(int pagesPerSecThreshold)
+    {
+        lock (Lock)
+        {
+            if (_failed || _value == null) return true;
+            if ((DateTime.UtcNow - _at).TotalSeconds > 15) return true;   // stale: be cautious
+            return _value.Value >= pagesPerSecThreshold;
+        }
+    }
+}

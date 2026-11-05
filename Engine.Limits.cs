@@ -18,6 +18,7 @@ internal sealed partial class Engine
         public double QuietSecs;
         public long OrigWs, Floor;            // size when first held; lowest ceiling known to be safe
         public DateTime FloorUntil = DateTime.MinValue;
+        public double CpuEwma;                // smoothed CPU use (% of one core), for the starvation check
         public bool Releasing;                // Release failed: keep the entry and retry, never forget a live cap
     }
 

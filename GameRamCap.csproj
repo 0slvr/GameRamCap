@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>GameRamCap</AssemblyName>
     <RootNamespace>GameRamCap</RootNamespace>
-    <Version>0.2.5</Version>
+    <Version>0.2.6</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 

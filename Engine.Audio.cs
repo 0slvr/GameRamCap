@@ -43,7 +43,15 @@ internal sealed partial class Engine
     /// <summary>Lifts the ceiling of one process (if it still is the same process).</summary>
     void ReleasePid(int pid)
     {
-        if (_limited.TryGetValue(pid, out var st)) ReleaseAndForget(pid, st);
+        if (_limited.TryGetValue(pid, out var st))
+        {
+            if (Config.LogHolds)
+            {
+                string n = "?"; try { using var p = Process.GetProcessById(pid); n = p.ProcessName; } catch { }
+                Logger.Write($"Audio: {n} pid {pid} plays sound - its ceiling is lifted and it is left alone while the sound lasts.");
+            }
+            ReleaseAndForget(pid, st);
+        }
     }
 
     // ---------- memory priority ----------
