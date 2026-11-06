@@ -533,6 +533,22 @@ internal static class Native
         catch { return 0; }
     }
 
+    /// <summary>True when the screen point is on the taskbar (Start button, search box, tray...), whose window is owned by explorer.</summary>
+    public static bool IsTaskbarAt(int x, int y)
+    {
+        try
+        {
+            var h = WindowFromPoint(new CLICKPT { X = x, Y = y });
+            if (h == IntPtr.Zero) return false;
+            var root = GetAncestor(h, 2 /* GA_ROOT */);
+            var cls = new StringBuilder(80);
+            GetClassNameW(root != IntPtr.Zero ? root : h, cls, 80);
+            string c = cls.ToString();
+            return c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd";
+        }
+        catch { return false; }
+    }
+
     /// <summary>UTC ticks of the last Win+V / Win+. / Win+; / Win+H press, or 0 if none yet.</summary>
     public static long LastInputPanelKeyTicks => Interlocked.Read(ref _panelKeyTicks);
 

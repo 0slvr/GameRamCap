@@ -205,6 +205,7 @@ internal sealed partial class Engine
     public void OnClickAt(int x, int y)
     {
         if (!Enabled || !Config.Enabled || !Config.WakeClickOnMouse) return;
+        if (Native.IsTaskbarAt(x, y)) { OnStartKeyPressed(); return; }   // click on the taskbar / Start button: wake the Start hosts just like the Win key does
         int pid = Native.PidAtPoint(x, y);
         if (pid <= 4) return;
         Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint fpid);
