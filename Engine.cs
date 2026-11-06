@@ -38,6 +38,10 @@ internal sealed partial class Engine : IDisposable
         "System", "Idle", "Registry", "Secure System", "Memory Compression",
         "smss", "csrss", "wininit", "winlogon", "services", "lsass", "lsm", "svchost",
         "dwm", "fontdrvhost",
+        // Anti-cheat services: a RAM ceiling or freeze on these can kick you from the game or get flagged as tampering.
+        "EasyAntiCheat", "EasyAntiCheat_EOS", "EasyAntiCheat_launcher", "BEService", "BEService_x64",
+        "vgc", "vgtray", "FACEITService", "FACEIT", "GameGuard", "GameMon", "GameMon64", "xhunter1",
+        "PnkBstrA", "PnkBstrB",
     };
 
     /// <summary>What is protected right now: built-in list + the user's own protected apps (Config.Exceptions) - the ones the user unprotected.
