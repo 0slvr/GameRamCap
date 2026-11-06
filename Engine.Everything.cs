@@ -17,7 +17,7 @@ internal sealed partial class Engine
 
     readonly Dictionary<string, Target> _neutral = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Smart mode with one of the five levels: the level alone decides the ceiling, so the per-app
+    /// <summary>Smart mode with one of the three levels: the level alone decides the ceiling, so the per-app
     /// Limit/Min/Max and the Default* numbers are NOT used (only Custom and Hard mode use them).</summary>
     bool UsesLevelOnly => Config.IsSmart() && !Presets.IsCustom(Config);
 
@@ -107,6 +107,9 @@ internal sealed partial class Engine
                 if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); continue; }
                 if (_loggedNames.Add(name))
                     Logger.Write($"Limiting {name} to {ceiling / MB} MB (was {wsNow / MB} MB).");
+                var lp = new List<Proc> { new Proc { Pid = pid } };
+                LowerPriority(lp);
+                LowerThreads(lp);
 
                 _limited[pid] = new Limited
                 {
@@ -122,5 +125,6 @@ internal sealed partial class Engine
 
         foreach (var pid in _limited.Keys.Where(k => !alive.Contains(k)).ToList())
             _limited.Remove(pid);
+        RestorePriority(_prio.Keys.Union(_threadPrio.Keys).Where(k => !alive.Contains(k)).ToList());
     }
 }

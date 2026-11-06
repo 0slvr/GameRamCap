@@ -11,9 +11,9 @@ internal sealed class Card : FlowLayoutPanel
         WrapContents = false;
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        Padding = new Padding(18, 14, 18, 14);
-        Margin = new Padding(3, 0, 3, 12);
-        MinimumSize = new Size(Ui.ContentWidth + 40, 0);
+        Padding = new Padding(22, 18, 22, 18);
+        Margin = new Padding(3, 0, 3, 16);
+        MinimumSize = new Size(Ui.ContentWidth + 48, 0);
         DoubleBuffered = true;
         ResizeRedraw = true;
     }
@@ -24,7 +24,7 @@ internal sealed class Card : FlowLayoutPanel
         g.Clear(Parent?.BackColor ?? Ui.Bg);
         if (Width < 4 || Height < 4) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = Ui.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), Ui.S(this, 10));
+        using var path = Ui.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), Ui.S(this, 14));
         using var fill = new SolidBrush(Ui.Surface);
         using var pen = new Pen(Ui.Border);
         g.FillPath(fill, path);
@@ -38,12 +38,15 @@ internal static class ModernGlyph
     const TextFormatFlags Flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix |
                                   TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine;
 
+    /// <summary>Width of the glyph: the radio dot is round, the check box is drawn as a toggle switch.</summary>
+    static int GlyphWidth(ButtonBase b) => b is ModernCheck ? Ui.S(b, 38) : Ui.S(b, 20);
+
     public static Size Measure(ButtonBase b)
     {
-        int box = Ui.S(b, 18), gap = Ui.S(b, 8);
+        int box = GlyphWidth(b), gap = Ui.S(b, 10);
         var s = TextRenderer.MeasureText(b.Text, b.Font, new Size(int.MaxValue, int.MaxValue),
             TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-        return new Size(box + gap + s.Width + 6, Math.Max(box, s.Height) + 6);
+        return new Size(box + gap + s.Width + 6, Math.Max(Ui.S(b, 20), s.Height) + 8);
     }
 
     public static void Paint(ButtonBase b, Graphics g, bool radio, bool on, bool hover)
@@ -51,48 +54,329 @@ internal static class ModernGlyph
         g.Clear(b.BackColor);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         bool enabled = b.Enabled;
-        int box = Ui.S(b, 18), gap = Ui.S(b, 8);
-        var r = new Rectangle(1, (b.Height - box) / 2, box - 2, box - 2);
+        int box = GlyphWidth(b), gap = Ui.S(b, 10);
+        int h = Ui.S(b, 20);
+        var r = new Rectangle(1, (b.Height - h) / 2, box - 2, h - 2);
         Color accent = enabled ? Ui.Accent : Color.FromArgb(110, Ui.Muted);
         Color edge = enabled ? (hover || b.Focused ? Ui.Accent : Ui.Muted) : Color.FromArgb(110, Ui.Muted);
 
-        if (radio)
+        if (!radio)
         {
-            using (var fill = new SolidBrush(Ui.Input)) g.FillEllipse(fill, r);
-            using (var pen = new Pen(on ? accent : edge, 1.6f)) g.DrawEllipse(pen, r);
-            if (on)
+            // toggle switch: pill track + round knob
+            using (var track = Ui.RoundRect(r, r.Height / 2))
             {
-                var dot = Rectangle.Inflate(r, -Ui.S(b, 4), -Ui.S(b, 4));
-                using var d = new SolidBrush(accent);
-                g.FillEllipse(d, dot);
-            }
-        }
-        else
-        {
-            using var path = Ui.RoundRect(r, Ui.S(b, 4));
-            if (on)
-            {
-                using var fill = new SolidBrush(accent);
-                g.FillPath(fill, path);
-                using var tick = new Pen(Color.White, Math.Max(1.8f, box / 9f)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-                g.DrawLines(tick, new[]
+                if (on)
                 {
-                    new PointF(r.X + r.Width * 0.24f, r.Y + r.Height * 0.52f),
-                    new PointF(r.X + r.Width * 0.43f, r.Y + r.Height * 0.72f),
-                    new PointF(r.X + r.Width * 0.78f, r.Y + r.Height * 0.30f),
-                });
+                    using var fill = new SolidBrush(hover && enabled ? Ui.AccentHover : accent);
+                    g.FillPath(fill, track);
+                }
+                else
+                {
+                    using var fill = new SolidBrush(Ui.Input);
+                    using var pen = new Pen(edge, 1.4f);
+                    g.FillPath(fill, track);
+                    g.DrawPath(pen, track);
+                }
             }
-            else
-            {
-                using var fill = new SolidBrush(Ui.Input);
-                g.FillPath(fill, path);
-                using var pen = new Pen(edge, 1.6f);
-                g.DrawPath(pen, path);
-            }
+            int k = r.Height - Ui.S(b, 6);
+            int kx = on ? r.Right - k - Ui.S(b, 3) : r.X + Ui.S(b, 3);
+            using (var knob = new SolidBrush(on ? Color.White : (enabled ? Ui.Muted : Color.FromArgb(110, Ui.Muted))))
+                g.FillEllipse(knob, kx, r.Y + (r.Height - k) / 2, k, k);
+            TextRenderer.DrawText(g, b.Text, b.Font, new Rectangle(box + gap, 0, Math.Max(1, b.Width - box - gap), b.Height),
+                enabled ? Ui.Text : Ui.Muted, Flags);
+            return;
+        }
+
+        r = new Rectangle(1, (b.Height - Ui.S(b, 18)) / 2, Ui.S(b, 18) - 2, Ui.S(b, 18) - 2);
+        box = Ui.S(b, 20);
+
+        using (var fill = new SolidBrush(Ui.Input)) g.FillEllipse(fill, r);
+        using (var pen = new Pen(on ? accent : edge, 1.6f)) g.DrawEllipse(pen, r);
+        if (on)
+        {
+            var dot = Rectangle.Inflate(r, -Ui.S(b, 4), -Ui.S(b, 4));
+            using var d = new SolidBrush(accent);
+            g.FillEllipse(d, dot);
         }
 
         TextRenderer.DrawText(g, b.Text, b.Font, new Rectangle(box + gap, 0, Math.Max(1, b.Width - box - gap), b.Height),
             enabled ? Ui.Text : Ui.Muted, Flags);
+    }
+}
+
+/// <summary>Rounded flat button. "primary" (Tag) = filled with the accent colour.</summary>
+internal sealed class ModernButton : Button
+{
+    bool _hover, _down;
+
+    /// <summary>Optional icon (a code from Windows' icon font) drawn before the text.</summary>
+    public string? Glyph { get; set; }
+
+    public override Size GetPreferredSize(Size proposedSize)
+    {
+        var s = base.GetPreferredSize(proposedSize);
+        return Glyph != null && Ui.Icons != null ? new Size(s.Width + Ui.S(this, 26), s.Height) : s;
+    }
+
+    public ModernButton()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        FlatStyle = FlatStyle.Flat;
+        Cursor = Cursors.Hand;
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; _down = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(Parent?.BackColor ?? Ui.Bg);
+        if (Width < 4 || Height < 4) return;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        bool primary = (Tag as string) == "primary";
+        bool ghost = (Tag as string) == "ghost";
+        Color fill, edge, fore;
+        if (ghost)
+        {
+            fill = !Enabled ? Parent?.BackColor ?? Ui.Bg : _down ? Ui.Border : _hover ? Ui.Hover : Parent?.BackColor ?? Ui.Bg;
+            edge = Focused ? Ui.Accent : fill;
+            fore = Enabled ? Ui.Text : Ui.Muted;
+        }
+        else if (primary)
+        {
+            fill = !Enabled ? Color.FromArgb(110, Ui.Accent) : _down ? Ui.AccentDown : _hover ? Ui.AccentHover : Ui.Accent;
+            edge = fill;
+            fore = Color.White;
+        }
+        else
+        {
+            fill = !Enabled ? Ui.Input : _down ? Ui.Border : _hover ? Ui.Hover : Ui.Input;
+            edge = Focused ? Ui.Accent : Ui.Border;
+            fore = Enabled ? Ui.Text : Ui.Muted;
+        }
+
+        using (var path = Ui.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), Ui.S(this, 9)))
+        using (var br = new SolidBrush(fill))
+        using (var pen = new Pen(edge))
+        {
+            g.FillPath(br, path);
+            g.DrawPath(pen, path);
+        }
+
+        const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix |
+                                      TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+        if (Glyph != null && Ui.Icons != null)
+        {
+            int iconW = Ui.S(this, 18), gap = Ui.S(this, 8);
+            int textW = TextRenderer.MeasureText(Text, Font, new Size(int.MaxValue, int.MaxValue), flags).Width;
+            int x = Math.Max(Ui.S(this, 8), (Width - (iconW + gap + textW)) / 2);
+            TextRenderer.DrawText(g, Glyph, Ui.Icons, new Rectangle(x, 0, iconW + 4, Height), primary ? fore : (ghost ? Ui.Accent : fore),
+                TextFormatFlags.Left | flags);
+            TextRenderer.DrawText(g, Text, Font, new Rectangle(x + iconW + gap, 0, Math.Max(1, Width - x - iconW - gap), Height), fore,
+                TextFormatFlags.Left | TextFormatFlags.EndEllipsis | flags);
+            return;
+        }
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(0, 0, Width, Height), fore,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix |
+            TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+    }
+}
+
+/// <summary>Our own column header for a list: big live total above each column name (like Task Manager),
+/// click to sort, drag the edge of a column to resize. The list's own header is switched off.</summary>
+internal sealed class ModernListHeader : Control
+{
+    readonly ListView _lv;
+    static readonly Font Stat = new("Segoe UI Semibold", 12.5f);
+    int _hover = -1, _drag = -1, _press = -1, _dragX, _dragW;
+
+    /// <summary>Text shown big above the column name; null = none.</summary>
+    public string?[] Summaries { get; set; } = Array.Empty<string?>();
+    public event Action<int>? ColumnClicked;
+    public event Action<int, int>? ColumnResizing;   // column, wanted width in px
+    public event Action? ResizeDone;
+    /// <summary>Press a header (not its edge) and drag sideways to move that column; the first column and the filler stay put.</summary>
+    public bool AllowReorder { get; set; }
+    public event Action? ColumnsReordered;
+    int _reorder = -1, _pressX;
+    bool _moved;
+
+    public ModernListHeader(ListView lv)
+    {
+        _lv = lv;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        Height = 52;
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Height = Ui.S(this, 52);
+    }
+
+    /// <summary>Where each column sits, as the list really paints it: the first row's cells give the position (so the header follows
+    /// sideways scrolling and any reordering), with the plain widths in display order as the fallback.</summary>
+    Rectangle[] Cells()
+    {
+        int n = _lv.Columns.Count;
+        var r = new Rectangle[n];
+        int x = 0;
+        foreach (int i in Enumerable.Range(0, n).OrderBy(i => _lv.Columns[i].DisplayIndex))
+        {
+            int w = _lv.Columns[i].Width;
+            r[i] = new Rectangle(x, 0, w, Height);
+            x += w;
+        }
+        if (n > 1 && _lv.IsHandleCreated && _lv.Items.Count > 0 && _lv.Items[0].SubItems.Count >= n)
+        {
+            try
+            {
+                var subs = _lv.Items[0].SubItems;
+                int minX = int.MaxValue;
+                for (int i = 1; i < n; i++)
+                {
+                    if (!Shown(i)) continue;
+                    var bd = subs[i].Bounds;
+                    if (bd.Width <= 0) continue;
+                    r[i] = new Rectangle(bd.X, 0, bd.Width, Height);
+                    minX = Math.Min(minX, bd.X);
+                }
+                if (minX != int.MaxValue) r[0] = new Rectangle(minX - _lv.Columns[0].Width, 0, _lv.Columns[0].Width, Height);
+            }
+            catch { }
+        }
+        return r;
+    }
+
+    bool Shown(int i) => _lv.Columns[i].Width > 0 && (_lv.Columns[i].Tag as string) is not ("hidden" or "filler");
+
+    /// <summary>An invisible last column that only soaks up the leftover width: then every real column may be dragged.</summary>
+    bool HasFiller => _lv.Columns.Count > 0 && (_lv.Columns[^1].Tag as string) == "filler";
+
+    int LastShown()
+    {
+        for (int i = _lv.Columns.Count - 1; i >= 0; i--) if (Shown(i)) return i;
+        return -1;
+    }
+
+    Rectangle Cell(int i) => Cells()[i];
+
+    int CellAt(Point p)
+    {
+        var cells = Cells();
+        for (int i = 0; i < _lv.Columns.Count; i++) if (Shown(i) && cells[i].Contains(p)) return i;
+        return -1;
+    }
+
+    int EdgeAt(Point p)
+    {
+        int last = HasFiller ? -1 : LastShown();
+        for (int i = 0; i < _lv.Columns.Count; i++)
+            if (Shown(i) && i != last && Math.Abs(p.X - Cell(i).Right) <= Ui.S(this, 4)) return i;
+        return -1;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(Ui.Surface);
+        int pad = Ui.S(this, 10);
+        var cells = Cells();
+        for (int i = 0; i < _lv.Columns.Count; i++)
+        {
+            if (!Shown(i)) continue;
+            var c = cells[i];
+            if (i == _hover)
+                using (var hb = new SolidBrush(Ui.Hover)) g.FillRectangle(hb, c);
+            bool right = i > 0 && _lv.Columns[i].TextAlign == HorizontalAlignment.Right;
+            var half = c.Height / 2;
+            var top = new Rectangle(c.X + pad, c.Y + Ui.S(this, 4), Math.Max(1, c.Width - 2 * pad), half - Ui.S(this, 2));
+            var bottom = new Rectangle(c.X + pad, c.Y + half - Ui.S(this, 2), Math.Max(1, c.Width - 2 * pad), c.Height - half - Ui.S(this, 2));
+            var align = (right ? TextFormatFlags.Right : TextFormatFlags.Left) | TextFormatFlags.VerticalCenter |
+                        TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+            string? sum = i < Summaries.Length ? Summaries[i] : null;
+            if (sum != null) TextRenderer.DrawText(g, sum, Stat, top, Ui.Text, align);
+            TextRenderer.DrawText(g, _lv.Columns[i].Text, Ui.Base, bottom, Ui.Muted, align);
+            using var sep = new Pen(Color.FromArgb(90, Ui.Border));
+            g.DrawLine(sep, c.Right - 1, Ui.S(this, 8), c.Right - 1, Height - Ui.S(this, 8));
+        }
+        using var line = new Pen(Ui.Border);
+        g.DrawLine(line, 0, Height - 1, Width, Height - 1);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (_drag >= 0)
+        {
+            ColumnResizing?.Invoke(_drag, Math.Max(1, _dragW + e.X - _dragX));
+            return;
+        }
+        if (AllowReorder && _press >= 1 && _reorder < 0 && (e.Button & MouseButtons.Left) != 0 && Math.Abs(e.X - _pressX) > Ui.S(this, 6))
+        {
+            _reorder = _press; _moved = false; _hover = _reorder; Cursor = Cursors.SizeAll;
+        }
+        if (_reorder >= 0)
+        {
+            var cells = Cells();
+            for (int j = 1; j < _lv.Columns.Count; j++)
+            {
+                if (j == _reorder || !Shown(j) || !cells[j].Contains(e.X, cells[j].Y + 1)) continue;
+                bool right = cells[j].Left > cells[_reorder].Left;
+                int mid = cells[j].Left + cells[j].Width / 2;
+                if ((right && e.X >= mid) || (!right && e.X <= mid))
+                {
+                    _lv.Columns[_reorder].DisplayIndex = _lv.Columns[j].DisplayIndex;
+                    _moved = true;
+                    _lv.Invalidate();
+                    Invalidate();
+                }
+                break;
+            }
+            return;
+        }
+        Cursor = EdgeAt(e.Location) >= 0 ? Cursors.VSplit : Cursors.Default;
+        int h = CellAt(e.Location);
+        if (h != _hover) { _hover = h; Invalidate(); }
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        if (_hover != -1) { _hover = -1; Invalidate(); }
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            int edge = EdgeAt(e.Location);
+            if (edge >= 0) { _drag = edge; _dragX = e.X; _dragW = _lv.Columns[edge].Width; Capture = true; }
+            else { _press = CellAt(e.Location); _pressX = e.X; }
+        }
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        if (_drag >= 0) { _drag = -1; Capture = false; ResizeDone?.Invoke(); }
+        else if (_reorder >= 0)
+        {
+            _reorder = -1; Cursor = Cursors.Default;
+            if (_moved) ColumnsReordered?.Invoke();
+            Invalidate();
+        }
+        else if (_press >= 0 && _press == CellAt(e.Location)) ColumnClicked?.Invoke(_press);
+        _press = -1;
+        base.OnMouseUp(e);
     }
 }
 
@@ -160,7 +444,7 @@ internal sealed class ModernTabs : Control
         {
             _owner = owner;
             Dock = DockStyle.Top;
-            Height = owner._compact ? 38 : 50;
+            Height = owner._compact ? 40 : 64;
             Cursor = Cursors.Hand;
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         }
@@ -168,7 +452,7 @@ internal sealed class ModernTabs : Control
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
-            Height = Ui.S(this, _owner._compact ? 38 : 50);
+            Height = Ui.S(this, _owner._compact ? 40 : 64);
         }
 
         Font TabFont => _owner._compact ? Ui.Base : Ui.TabFont;
@@ -181,36 +465,66 @@ internal sealed class ModernTabs : Control
             _rects.Clear();
             var pages = _owner._inner.TabPages;
             int sel = _owner._inner.SelectedIndex;
-            int x = Ui.S(this, 12);
-            for (int i = 0; i < pages.Count; i++)
+            if (pages.Count == 0) return;
+
+            // a centred segmented control: one rounded container, the selected tab is a filled pill inside it
+            int pad = Ui.S(this, 4);
+            int barH = Ui.S(this, _owner._compact ? 32 : 40);
+            int n = _owner.PinLast ? pages.Count - 1 : pages.Count;
+            var widths = new int[Math.Max(0, n)];
+            int total = 0;
+            for (int i = 0; i < n; i++)
             {
-                string t = pages[i].Text;
-                var sz = TextRenderer.MeasureText(t, TabFont, new Size(int.MaxValue, int.MaxValue),
+                var sz = TextRenderer.MeasureText(pages[i].Text, TabFont, new Size(int.MaxValue, int.MaxValue),
                     TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-                int w = sz.Width + Ui.S(this, 28);
-                var r = new Rectangle(x, 0, w, Height - 1);
+                widths[i] = sz.Width + Ui.S(this, 40);
+                total += widths[i];
+            }
+            var bar = new Rectangle((Width - total - 2 * pad) / 2, (Height - barH) / 2, total + 2 * pad, barH);
+            using (var path = Ui.RoundRect(bar, barH / 2))
+            using (var fill = new SolidBrush(Ui.Surface))
+            using (var pen = new Pen(Ui.Border))
+            {
+                g.FillPath(fill, path);
+                g.DrawPath(pen, path);
+            }
+
+            int x = bar.X + pad;
+            for (int i = 0; i < n; i++)
+            {
+                var r = new Rectangle(x, bar.Y + pad, widths[i], barH - 2 * pad);
                 _rects.Add(r);
                 bool on = i == sel;
-                if (!on && i == _hover)
+                if (on || i == _hover)
                 {
-                    using var path = Ui.RoundRect(new Rectangle(r.X + 2, Ui.S(this, 6), r.Width - 4, Height - Ui.S(this, 14)), Ui.S(this, 6));
-                    using var hb = new SolidBrush(Ui.Hover);
-                    g.FillPath(hb, path);
+                    using var path = Ui.RoundRect(r, r.Height / 2);
+                    using var pill = new SolidBrush(on ? Ui.Accent : Ui.Hover);
+                    g.FillPath(pill, path);
                 }
-                TextRenderer.DrawText(g, t, TabFont, r, on ? Ui.Text : Ui.Muted,
+                TextRenderer.DrawText(g, pages[i].Text, TabFont, r, on ? Color.White : Ui.Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
-                if (on)
-                {
-                    int uh = Ui.S(this, 3);
-                    var u = new Rectangle(r.X + (r.Width - sz.Width) / 2, Height - uh - 1, sz.Width, uh);
-                    using var path = Ui.RoundRect(u, 1);
-                    using var ab = new SolidBrush(Ui.Accent);
-                    g.FillPath(ab, path);
-                }
-                x += w;
+                x += widths[i];
             }
-            using var line = new Pen(Ui.Border);
-            g.DrawLine(line, 0, Height - 1, Width, Height - 1);
+
+            // the last page (Settings) is a separate button at the right end of the top bar
+            if (_owner.PinLast)
+            {
+                int idx = pages.Count - 1;
+                string label = "\u2699  " + pages[idx].Text;
+                var lsz = TextRenderer.MeasureText(label, TabFont, new Size(int.MaxValue, int.MaxValue),
+                    TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                int bw = lsz.Width + Ui.S(this, 40);
+                var br = new Rectangle(Width - bw - Ui.S(this, 24), bar.Y, bw, barH);
+                _rects.Add(br);
+                bool pinOn = idx == sel;
+                using var bpath = Ui.RoundRect(br, barH / 2);
+                using var bfill = new SolidBrush(pinOn ? Ui.Accent : (idx == _hover ? Ui.Hover : Ui.Surface));
+                using var bpen = new Pen(pinOn ? Ui.Accent : Ui.Border);
+                g.FillPath(bfill, bpath);
+                g.DrawPath(bpen, bpath);
+                TextRenderer.DrawText(g, label, TabFont, br, pinOn ? Color.White : Ui.Text,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+            }
         }
 
         int HitTest(Point p)
@@ -257,6 +571,9 @@ internal sealed class ModernTabs : Control
         _inner.ControlAdded += (_, _) => _strip.Invalidate();
         _inner.ControlRemoved += (_, _) => _strip.Invalidate();
     }
+
+    /// <summary>True: the last page is shown as its own button at the right end of the bar, apart from the other tabs.</summary>
+    public bool PinLast { get; set; }
 
     public TabControl.TabPageCollection TabPages => _inner.TabPages;
 
@@ -463,6 +780,72 @@ internal sealed class ModernSteps : Control
             bool on = i == shown;
             TextRenderer.DrawText(g, _labels[i], on ? Ui.Bold : Font,
                 new Rectangle((int)StopX(i) - lw / 2, ly, lw, lh), on ? Ui.Text : Ui.Muted, flags);
+        }
+    }
+}
+
+/// <summary>A row of round colour swatches; the chosen one has a ring around it.</summary>
+internal sealed class ModernSwatches : Control
+{
+    string _value = "";
+    int _hover = -1;
+    public event EventHandler? ValueChanged;
+
+    public ModernSwatches()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        Cursor = Cursors.Hand;
+        Size = new Size(Ui.AccentNames.Length * 46, 40);
+    }
+
+    public string Value
+    {
+        get => _value;
+        set { if (_value == value) return; _value = value; Invalidate(); ValueChanged?.Invoke(this, EventArgs.Empty); }
+    }
+
+    int Step => Height + 6;
+    int At(Point p) { int i = p.X / Step; return i >= 0 && i < Ui.AccentNames.Length ? i : -1; }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        int i = At(e.Location);
+        if (i != _hover) { _hover = i; Invalidate(); }
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e) { _hover = -1; Invalidate(); base.OnMouseLeave(e); }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        int i = At(e.Location);
+        if (e.Button == MouseButtons.Left && i >= 0) Value = Ui.AccentNames[i];
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(Parent?.BackColor ?? Ui.Surface);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        for (int i = 0; i < Ui.AccentNames.Length; i++)
+        {
+            string name = Ui.AccentNames[i];
+            int ring = Math.Max(2, Height / 16);
+            var cell = new Rectangle(i * Step, 0, Height, Height);
+            var dot = Rectangle.Inflate(cell, -Height / 5, -Height / 5);
+            if (name == _value)
+            {
+                using var pen = new Pen(Ui.Text, ring);
+                g.DrawEllipse(pen, Rectangle.Inflate(cell, -ring, -ring));
+            }
+            else if (i == _hover)
+            {
+                using var pen = new Pen(Ui.Border, ring);
+                g.DrawEllipse(pen, Rectangle.Inflate(cell, -ring, -ring));
+            }
+            using var br = new SolidBrush(Ui.AccentSwatch(name));
+            g.FillEllipse(br, dot);
         }
     }
 }

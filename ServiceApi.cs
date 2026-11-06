@@ -5,7 +5,7 @@ using Microsoft.Win32;
 namespace GameRamCap;
 
 /// <summary>Windows services through the Service Control Manager (advapi32), without an extra package.
-/// Used by WindowsUpdatePause only.</summary>
+/// Used by WindowsUpdatePause (leftover recovery) only.</summary>
 internal static class ServiceApi
 {
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

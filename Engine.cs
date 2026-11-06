@@ -29,12 +29,34 @@ internal sealed partial class Engine : IDisposable
     internal static readonly string[] Relaxed = { "explorer", "TextInputHost" };   // TextInputHost (Win+V) is handled like a normal app: "in focus" while the panel is open (see InputPanelOpen); Start and Search stay protected
 
     /// <summary>What the engine refuses to trim: ProtectedFull minus the Relaxed shell helpers.</summary>
-    internal static readonly HashSet<string> Protected = new(ProtectedFull.Except(Relaxed, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
+    /// <summary>Protected by default: the Windows processes that crash or log you out if they are ended or starved
+    /// (blue screen, black screen, lost session). Everything else is unprotected unless the user protects it
+    /// (right-click > Protect, or the Exceptions list). The user can unprotect these too (right-click > Unprotect).
+    /// ProtectedFull is still used for game detection and the focus walk.</summary>
+    internal static readonly HashSet<string> BaseProtected = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "System", "Idle", "Registry", "Secure System", "Memory Compression",
+        "smss", "csrss", "wininit", "winlogon", "services", "lsass", "lsm", "svchost",
+        "dwm", "fontdrvhost",
+    };
+
+    /// <summary>What is protected right now: built-in list + the user's own protected apps (Config.Exceptions) - the ones the user unprotected.
+    /// Replaced as a whole (never edited in place) so the engine thread can read it while the UI changes it.</summary>
+    internal static volatile HashSet<string> Protected = new(BaseProtected, StringComparer.OrdinalIgnoreCase);
+
+    internal static void RebuildProtected(Config c)
+    {
+        var set = new HashSet<string>(BaseProtected, StringComparer.OrdinalIgnoreCase);
+        foreach (var n in c.UnprotectedBuiltIn ?? new()) set.Remove(n);
+        foreach (var n in c.Exceptions ?? new()) set.Add(n);
+        Protected = set;
+    }
 
     readonly Dictionary<int, Limited> _limited = new();
     DateTime _gamingSince = DateTime.MinValue;
 
-    public Config Config { get; set; } = new();
+    Config _config = new();
+    public Config Config { get => _config; set { _config = value; RebuildProtected(value); } }
     public bool Enabled { get; set; } = true;
     public int LimitedCount => _limited.Count;
     public string Status { get; private set; } = "Idle";
@@ -56,7 +78,6 @@ internal sealed partial class Engine : IDisposable
         {
             _pCache = null;
             TickFocus();
-            TickProfile();
             TickStandby();
             try { UsageMonitor.Update(Config); } catch (Exception ex) { Logger.Write("Usage monitor: " + ex.Message); }
             if (Enabled && Config.Enabled) ProcessRules.Apply(Config);   // saved priority / CPU-core rules (throttled inside)
@@ -70,5 +91,5 @@ internal sealed partial class Engine : IDisposable
     static T[] Safe<T>(Func<T[]> f) { try { return f(); } catch { return Array.Empty<T>(); } }
     static T Safe<T>(Func<T> f, T fallback) { try { return f(); } catch { return fallback; } }
 
-    public void Dispose() { RestoreAll(); Suspender.ResumeAll(); WindowsUpdatePause.Restore(); StandbyCleaner.Close(); LearnedStore.Flush(true); }
+    public void Dispose() { RestoreAll(); Suspender.ResumeAll(); StandbyCleaner.Close(); }
 }

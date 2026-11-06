@@ -20,8 +20,8 @@ internal sealed record Preset(
 
 internal static class Presets
 {
-    public static readonly string[] Names  = { "UltraPerformance", "Performance", "Balanced", "Safe", "UltraSafe" };
-    public static readonly string[] Labels = { "Ultra Performance", "Performance", "Balanced", "Safe", "Ultra Safe" };
+    public static readonly string[] Names  = { "UltraPerformance", "Performance", "Balanced" };
+    public static readonly string[] Labels = { "Ultra Performance", "Performance", "Balanced" };
 
     public const string CustomName = "Custom";
 
@@ -33,21 +33,19 @@ internal static class Presets
         string.Equals((c.Profile ?? "").Replace(" ", "").Replace("-", "").Replace("_", ""), CustomName, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The OLD per-app Custom mode (own numbers per app on the Apps tab) is gone: Custom is now a level of its own
-    /// that goes through the same engine path as the five levels, so this is always false. Per-app numbers still work in
+    /// that goes through the same engine path as the three levels, so this is always false. Per-app numbers still work in
     /// Hard mode and for Apps rows ticked "Own limit".</summary>
     public static bool IsCustom(Config c) => false;
 
     static readonly Dictionary<string, Preset> Map = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Every level acts at all times (Always) and re-checks every N seconds: Ultra = 1s ... UltraSafe = 5s.
+        // Every level acts at all times (Always) and re-checks every N seconds: Ultra = 1s ... Balanced = 3s.
         // The real difference is HoldMB: the hard RAM ceiling per background process (app total = HoldMB x its processes).
-        // HoldFloorMB also lowers the auto-squeeze minimum for that level (see TuneHeld), so Ultra can really go down to 8 MB.
+        // HoldFloorMB is the smallest a process of a held app is squeezed to at that level, so Ultra can really go down to 8 MB.
         //                                   always pres crit scan cool grace scale busy  busyC minMB crit  holdMB floor keep%
         ["UltraPerformance"] = new("UltraPerformance", true, 60, 35, 1.0, 1.0, 1.0, 0.35, 0.40, 1.00, 20,  0.25, 8,   8,   1),
         ["Performance"]      = new("Performance",      true, 45, 25, 2.0, 2.0, 2.0, 0.70, 0.25, 0.70, 30,  0.40, 20,  12,  8),
         ["Balanced"]         = new("Balanced",         true, 30, 12, 3.0, 3.0, 3.0, 1.00, 0.15, 0.50, 40,  0.50, 30,  16,  15),
-        ["Safe"]             = new("Safe",             true, 20,  8, 4.0, 4.0, 4.0, 1.50, 0.08, 0.30, 80,  0.70, 40,  24,  25),
-        ["UltraSafe"]        = new("UltraSafe",        true, 12,  5, 5.0, 5.0, 5.0, 2.50, 0.04, 0.15, 150, 0.85, 90,  48,  50),
         // Custom starts as a copy of Balanced; the user's own numbers (Config.CustomLevel) are applied on top in Resolve.
         ["Custom"]           = new("Custom",           true, 30, 12, 3.0, 3.0, 3.0, 1.00, 0.15, 0.50, 40,  0.50, 30,  16,  15),
     };

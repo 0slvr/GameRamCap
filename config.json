@@ -2,8 +2,6 @@
   "Enabled": true,
   "Mode": "Smart",
   "Profile": "Balanced",
-  "HoldBackground": true,
-  "SoftTrim": true,
   "LimitWhenRamFree": true,
   "PressureFreePercent": 25,
   "CriticalFreePercent": 10,
@@ -21,7 +19,6 @@
   "AlwaysLimit": true,
   "DelaySeconds": 5,
   "KeepLimitsWhileGameRuns": true,
-  "AutoDetectFullscreen": true,
   "Games": [],
   "FullscreenIgnore": [
     "chrome",
@@ -32,51 +29,9 @@
     "vlc",
     "explorer"
   ],
-  "Targets": [
-    {
-      "Exe": "Discord",
-      "CeilingMB": 250,
-      "MinCeilingMB": 100,
-      "MaxCeilingMB": 700,
-      "Adaptive": true,
-      "FocusAlso": []
-    },
-    {
-      "Exe": "claude",
-      "CeilingMB": 600,
-      "MinCeilingMB": 300,
-      "MaxCeilingMB": 1500,
-      "Adaptive": true,
-      "FocusAlso": []
-    },
-    {
-      "Exe": "steamwebhelper",
-      "CeilingMB": 150,
-      "MinCeilingMB": 64,
-      "MaxCeilingMB": 600,
-      "Adaptive": true,
-      "FocusAlso": [
-        "steam"
-      ]
-    },
-    {
-      "Exe": "Spotify",
-      "CeilingMB": 120,
-      "MinCeilingMB": 48,
-      "MaxCeilingMB": 400,
-      "Adaptive": true,
-      "FocusAlso": []
-    }
-  ],
+  "Targets": [],
   "HoldMinProcessMB": 64,
   "HoldKeepPercent": 60,
-  "AutoSqueeze": true,
-  "AutoMinProcessMB": 16,
-  "AutoFaultRate": 150,
-  "AutoProbeSeconds": 10,
   "AudioProtect": true,
-  "AudioProtectGraceSeconds": 8,
-  "LowerMemoryPriority": true,
-  "BackgroundMemoryPriority": 2,
-  "LearnFloors": true
+  "AudioProtectGraceSeconds": 8
 }

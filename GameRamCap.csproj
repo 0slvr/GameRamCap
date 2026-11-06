@@ -10,6 +10,12 @@
     <RootNamespace>GameRamCap</RootNamespace>
     <Version>0.2.6</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Also embedded as a managed resource so the tray icon and every window can load it at run time (see AppIcon.cs). -->
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+  </ItemGroup>
 
 </Project>

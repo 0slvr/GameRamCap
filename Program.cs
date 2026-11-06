@@ -6,6 +6,8 @@ namespace GameRamCap;
 static class Program
 {
     internal const string ShowEventName = "GameRamCap.ShowWindow";
+    /// <summary>True when started by the Windows startup task: stay in the tray, do not open the window.</summary>
+    internal static bool StartMinimized;
 
     [STAThread]
     static void Main(string[] args)
@@ -29,6 +31,7 @@ static class Program
             return;
         }
 
+        StartMinimized = args.Any(a => string.Equals(a, Autostart.MinimizedArg, StringComparison.OrdinalIgnoreCase));
         using var mutex = new Mutex(true, "GameRamCap.SingleInstance", out bool first);
         if (!first)
         {
@@ -45,6 +48,7 @@ static class Program
 
         try { int n = Suspender.RecoverStale(); if (n > 0) Logger.Write($"Resumed {n} process(es) left frozen by the previous run."); } catch { }
         try { WindowsUpdatePause.RecoverStale(); } catch { }
+        DebugPrivilege.Enable();
         StartWatchdog();
         ApplicationConfiguration.Initialize();
         Application.Run(new TrayContext());
@@ -97,8 +101,8 @@ sealed class TrayContext : ApplicationContext
         _settings = new SettingsPanel(() => _engine.Config, SaveCfg, SetProfile,
             OpenConfigFile,
             LoadConfig,
-            () => { LearnedStore.Clear(); Logger.Write("Learned limits cleared."); },
-            Logger.Open);
+            Logger.Open,
+            ResetToDefaults);
 
         _home = new HomePanel(() => _engine.Config, SaveCfg, () => _engine.Status, () => _engine.LimitedCount,
             SetProfile, SetMode, SetEnabled, tab => ShowMain(tab), _settings.SmartDetails, BoostNow);
@@ -140,10 +144,26 @@ sealed class TrayContext : ApplicationContext
         startup.Click += (_, _) =>
         {
             bool want = !startup.Checked;
-            if (Autostart.Set(want)) startup.Checked = want;
-            else _balloons.Enqueue(("GameRamCap", "Could not change the startup task."));
+            Task.Run(() => Autostart.Set(want)).ContinueWith(t =>
+            {
+                try
+                {
+                    menu.BeginInvoke(() =>
+                    {
+                        if (t.IsCompletedSuccessfully && t.Result) startup.Checked = want;
+                        else _balloons.Enqueue(("GameRamCap", "Could not change the startup task."));
+                    });
+                }
+                catch { }
+            });
         };
-        menu.Opening += (_, _) => startup.Checked = Autostart.IsEnabled();
+        // Opening must be instant: show the last known state, check with Windows in the background and fix the tick when it answers.
+        menu.Opening += (_, _) =>
+        {
+            startup.Checked = Autostart.Cached;
+            Autostart.RefreshAsync(on => { try { menu.BeginInvoke(() => startup.Checked = on); } catch { } });
+        };
+        Autostart.RefreshAsync();   // warm the cache at launch
         menu.Items.Add(startup);
         menu.Items.Add("Open log file", null, (_, _) => Logger.Open());
         menu.Items.Add(new ToolStripSeparator());
@@ -151,7 +171,7 @@ sealed class TrayContext : ApplicationContext
 
         _tray = new NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = AppIcon.Tray,
             Text = "GameRamCap",
             ContextMenuStrip = menu,
             Visible = true,
@@ -172,6 +192,9 @@ sealed class TrayContext : ApplicationContext
         // Only needed to keep the Win+V host safe from the recycler (and for the diagnostics): no hook when both are off.
         // Always on: the Win+V key press itself wakes the host up (limit lifted + pages read back) before the panel even shows.
         Native.OnPanelKey = () => Task.Run(() => { try { _engine.OnPanelKeyPressed(); } catch (Exception ex) { LogOnce("Panel key", ex); } });
+        Native.OnStartKey = () => Task.Run(() => { try { _engine.OnStartKeyPressed(); } catch (Exception ex) { LogOnce("Start key", ex); } });
+        Native.OnAltTabKey = () => Task.Run(() => { try { _engine.OnAltTabPressed(); } catch (Exception ex) { LogOnce("Alt+Tab key", ex); } });
+        Native.OnMouseDown = (x, y) => Task.Run(() => { try { _engine.OnClickAt(x, y); } catch (Exception ex) { LogOnce("Mouse click", ex); } });
         Native.WatchInputPanelKeys(_engine.Config.DebugInputHost);
         if (_engine.Config.DebugInputHost) InputHostProbe.Start();
         Native.WatchWindowActivity(() => Task.Run(() => { try { _engine.OnPanelOpened(); } catch (Exception ex) { LogOnce("Panel event", ex); } }));
@@ -181,7 +204,9 @@ sealed class TrayContext : ApplicationContext
         _timer.Tick += (_, _) => OnTick();
         _timer.Start();
 
-        ShowTargets();   // open the window right at startup (the tray icon is still there)
+        if (!Program.StartMinimized) ShowTargets();   // open the window at a normal start; the startup task starts minimized (tray only)
+        // An older startup task has no --minimized flag: refresh it once (same task, same settings).
+        else Task.Run(() => { try { if (Autostart.IsEnabled()) Autostart.Set(true); } catch { } });
     }
 
     static void OpenConfigFile()
@@ -294,6 +319,33 @@ sealed class TrayContext : ApplicationContext
     }
 
     void ShowTargets() => ShowMain(MainWindow.TabHome);
+
+    /// <summary>Settings > Maintenance > Reset to defaults: every setting goes back to its built-in value. Your own lists
+    /// (Targets, Games, Exceptions, Fullscreen ignore, Rules, unprotected built-ins) are kept.</summary>
+    void ResetToDefaults()
+    {
+        var ask = MessageBox.Show("Reset all settings to their defaults?\n\nYour own lists (apps, games, exceptions, rules) are kept.",
+            "GameRamCap", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (ask != DialogResult.Yes) return;
+        try
+        {
+            var old = _engine.Config;
+            var fresh = new Config
+            {
+                Targets = old.Targets,
+                Games = old.Games,
+                Exceptions = old.Exceptions,
+                FullscreenIgnore = old.FullscreenIgnore,
+                Rules = old.Rules,
+                UnprotectedBuiltIn = old.UnprotectedBuiltIn,
+            };
+            ConfigStore.Save(fresh);
+            Logger.Write("Settings reset to defaults.");
+            LoadConfig();
+            _settings?.Sync();
+        }
+        catch (Exception ex) { Logger.Write("Reset to defaults failed: " + ex.Message); }
+    }
 
     void LoadConfig()
     {

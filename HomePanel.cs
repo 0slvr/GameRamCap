@@ -14,9 +14,9 @@ internal sealed class HomePanel : UserControl
     readonly Label _state = new() { AutoSize = true, Font = Ui.Hero };
     readonly Label _detail = new() { AutoSize = true, MaximumSize = new Size(Ui.ContentWidth, 0) };
     readonly Label _stats = new() { AutoSize = true, Tag = "muted" };
-    readonly Button _boost = new() { AutoSize = true, MinimumSize = new Size(120, 34), Text = "Boost now" };
+    readonly ModernButton _boost = new() { AutoSize = true, MinimumSize = new Size(132, 38), Text = "Boost now" };
     readonly Label _boostMsg = new() { AutoSize = true, Tag = "muted", Margin = new Padding(8, 9, 3, 0) };
-    readonly Button _toggle = new() { AutoSize = true, MinimumSize = new Size(120, 34), Tag = "primary" };
+    readonly ModernButton _toggle = new() { AutoSize = true, MinimumSize = new Size(132, 38), Tag = "primary" };
 
     readonly ModernRadio _smart = new() { AutoSize = true, Text = Ui.SmartText };
     readonly ModernRadio _hard = new() { AutoSize = true, Text = Ui.HardText };
@@ -24,12 +24,10 @@ internal sealed class HomePanel : UserControl
     // Smart only
     readonly FlowLayoutPanel _smartBox = new() { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
     // The intensity slider: gentlest -> strongest, then Custom
-    static readonly string[] SliderNames  = { "UltraSafe", "Safe", "Balanced", "Performance", "UltraPerformance", "Custom" };
-    static readonly string[] SliderLabels = { "Ultra Safe", "Safe", "Balanced", "Performance", "Ultra Performance", "Custom" };
+    static readonly string[] SliderNames  = { "Balanced", "Performance", "UltraPerformance", "Custom" };
+    static readonly string[] SliderLabels = { "Balanced", "Performance", "Ultra Performance", "Custom" };
     static readonly string[] SliderDesc =
     {
-        "Very gentle. Only squeezes heavy background apps and leaves them plenty of room. Nothing should feel different.",
-        "Gentle. Background apps keep a comfortable amount of RAM.",
         "A good middle: frees a fair amount of RAM without making apps slow to come back. A good start.",
         "Strong. Frees a lot of RAM; an app you switch back to may need a moment to wake up.",
         "The strongest preset. Frees the most RAM; background apps are kept very small and may feel slow when you return to them.",
@@ -54,7 +52,7 @@ internal sealed class HomePanel : UserControl
     readonly ModernNumeric _cKeep  = new() { Minimum = 1, Maximum = 100, Width = 80 };
     readonly Label _cWarn = new() { AutoSize = true, Tag = "warn", MaximumSize = new Size(Ui.ContentWidth, 0), Margin = new Padding(3, 4, 3, 4), Visible = false };
     readonly List<(ModernNumeric Box, Func<Preset, decimal> Show)> _cNums = new();
-    readonly Button _advBtn = new() { AutoSize = true };
+    readonly ModernButton _advBtn = new() { AutoSize = true };
     bool _advOpen;
 
     // Hard (and Custom level): limit for apps that are not in the list
@@ -70,9 +68,10 @@ internal sealed class HomePanel : UserControl
 
     // both modes
     readonly ModernRadio _whenAlways = new() { AutoSize = true, Text = "All the time (even when no game is running)" };
+    readonly ModernCheck _startup = new() { AutoSize = true, Text = "Start with Windows (minimized to the tray)", Margin = new Padding(3, 8, 3, 3) };
     readonly ModernRadio _whenGame = new() { AutoSize = true, Text = "Only while a game is running" };
 
-    readonly Button _more = new() { AutoSize = true };
+    readonly ModernButton _more = new() { AutoSize = true };
     Control _smartDetails = null!;
     bool _moreOpen;
 
@@ -89,8 +88,8 @@ internal sealed class HomePanel : UserControl
         var flow = Ui.PageFlow();
 
         // 1. Title + status card
-        flow.Controls.Add(new Label { Text = "GameRamCap", AutoSize = true, Font = Ui.Title, Margin = new Padding(0, 0, 3, 2) });
-        flow.Controls.Add(Ui.Note("Caps the RAM of background apps so your games stay fast. The app you are using is never limited."));
+        flow.Controls.Add(new Label { Text = "GameRamCap", AutoSize = true, Font = Ui.Title, Margin = new Padding(3, 0, 3, 2) });
+        flow.Controls.Add(Spaced(Ui.Note("Caps the RAM of background apps so your games stay fast. The app you are using is never limited.")));
         var statusCard = Ui.MakeCard();
         statusCard.Controls.Add(_state);
         statusCard.Controls.Add(_detail);
@@ -175,6 +174,26 @@ internal sealed class HomePanel : UserControl
         optCard.Controls.Add(when);
         _whenAlways.CheckedChanged += (_, _) => { if (!_syncing && _whenAlways.Checked) { _cfg().AlwaysLimit = true; _save(); } };
         _whenGame.CheckedChanged   += (_, _) => { if (!_syncing && _whenGame.Checked)   { _cfg().AlwaysLimit = false; _save(); } };
+        optCard.Controls.Add(Ui.Heading("Startup"));
+        optCard.Controls.Add(_startup);
+        _startup.CheckedChanged += (_, _) =>
+        {
+            if (_syncing) return;
+            bool want = _startup.Checked;
+            _startup.Enabled = false;
+            Task.Run(() => Autostart.Set(want)).ContinueWith(t =>
+            {
+                bool ok = t.IsCompletedSuccessfully && t.Result;
+                try { BeginInvoke(() => { if (!ok) { _syncing = true; _startup.Checked = !want; _syncing = false; } _startup.Enabled = true; }); } catch { }
+            });
+        };
+        // Read the current state without blocking the window (schtasks can take a moment).
+        Task.Run(Autostart.IsEnabled).ContinueWith(t =>
+        {
+            if (!t.IsCompletedSuccessfully) return;
+            void Apply() { _syncing = true; _startup.Checked = t.Result; _syncing = false; }
+            try { if (IsHandleCreated) BeginInvoke(Apply); else HandleCreated += (_, _) => Apply(); } catch { }
+        });
         flow.Controls.Add(optCard);
 
         // 5. Buttons
@@ -184,7 +203,6 @@ internal sealed class HomePanel : UserControl
             using var f = new ExceptionsForm(ConfigStore.Load());
             f.ShowDialog(FindForm());
         }));
-        nav.Controls.Add(Ui.Btn("Settings...", () => goTab(MainWindow.TabSettings)));
         flow.Controls.Add(nav);
 
         flow.Controls.Add(Ui.Note("Closing this window keeps GameRamCap running in the tray. Use Exit in the tray menu to quit."));
@@ -196,6 +214,8 @@ internal sealed class HomePanel : UserControl
         _timer.Start();
         Sync();
     }
+
+    static Label Spaced(Label l) { l.Margin = new Padding(3, 0, 3, 18); return l; }
 
     // ---------------- Custom level ----------------
 
@@ -316,11 +336,11 @@ internal sealed class HomePanel : UserControl
     {
         var c = _cfg();
         bool on = c.Enabled;
-        _state.Text = on ? "● Active" : "● Paused";
+        _state.Text = on ? "●  Active" : "●  Paused";
         _state.ForeColor = on ? Ui.Good : Ui.Muted;
         _detail.Text = _status();
         double free = Native.FreeRamPercent();
-        _stats.Text = (free >= 0 ? $"Free RAM: {free:0}%     " : "") + $"Limited processes: {_limitedCount()}";
+        _stats.Text = (free >= 0 ? $"Free RAM  {free:0}%      \u2022      " : "") + $"Limited processes  {_limitedCount()}";
     }
 
     void ApplyMore()
@@ -349,7 +369,7 @@ internal sealed class HomePanel : UserControl
             _limitLabel.Text = Ui.LimitLabel(perApp);
             string cur = Presets.Resolve(c).Name;
             int idx = Array.FindIndex(SliderNames, n => string.Equals(n, cur, StringComparison.OrdinalIgnoreCase));
-            _level.Value = idx >= 0 ? idx : 2;
+            _level.Value = idx >= 0 ? idx : 0;
             _customBox.Visible = smart && Presets.IsCustomLevel(c);
             if (Presets.IsCustomLevel(c))
             {

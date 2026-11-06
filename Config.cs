@@ -16,7 +16,7 @@ internal sealed class Target
     /// <summary>Smart mode: total RAM (all processes of this app together) it may keep while in the background.
     /// 0 = use MaxCeilingMB.</summary>
     public int BudgetMB { get; set; } = 0;
-    /// <summary>With one of the five levels: use THIS app's own Limit/Min/Max/Adaptive instead of the level's numbers.
+    /// <summary>With one of the three levels: use THIS app's own Limit/Min/Max/Adaptive instead of the level's numbers.
     /// (Custom always uses them.)</summary>
     public bool UseOwnLimit { get; set; } = false;
 }
@@ -39,10 +39,10 @@ internal sealed class PresetOverride
 
 internal sealed class Config
 {
-    /// <summary>Edits of the five intensity levels, keyed by level name (UltraPerformance ... UltraSafe).</summary>
+    /// <summary>Edits of the intensity levels, keyed by level name (UltraPerformance ... Balanced).</summary>
     public Dictionary<string, PresetOverride> PresetOverrides { get; set; } = new();
     /// <summary>The numbers of the Custom level (the last stop of the intensity slider on the Main tab).
-    /// A null field means "use the Balanced value". Custom runs through the same engine path as the five levels.</summary>
+    /// A null field means "use the Balanced value". Custom runs through the same engine path as the three levels.</summary>
     public PresetOverride CustomLevel { get; set; } = new();
     public bool Enabled { get; set; } = true;
     /// <summary>"Smart" (default): no hard caps. Background apps are trimmed gently, only when Windows is short on RAM,
@@ -63,31 +63,13 @@ internal sealed class Config
     public double TrimCooldownSeconds { get; set; } = 30;
     /// <summary>Smart mode: an app you just left is not touched for this many seconds (quick Alt+Tab back is instant).</summary>
     public double GraceAfterFocusSeconds { get; set; } = 5;
-    /// <summary>Smart mode intensity: UltraPerformance, Performance, Balanced, Safe, UltraSafe, or Custom.
-    /// The five levels use their own built-in table (Presets.cs; per-level overrides via PresetOverrides). Custom uses the individual numbers above AND
+    /// <summary>Smart mode intensity: UltraPerformance, Performance, Balanced, or Custom.
+    /// The three levels use their own built-in table (Presets.cs; per-level overrides via PresetOverrides). Custom uses the individual numbers above AND
     /// the per-app Limit/Min/Max (Targets) and the "apps not in the list" limit (Default*) from the Apps tab;
-    /// those app numbers are ignored with the five levels.</summary>
+    /// those app numbers are ignored with the three levels.</summary>
     public string Profile { get; set; } = "Balanced";
-    /// <summary>Smart mode: once a background app has been trimmed, keep it from growing back with a hard ceiling
-    /// (its target CeilingMB per process) until you focus it again. Focusing the app lifts the ceiling at once.
-    /// false = pure soft trimming (the app may re-grow between trims).</summary>
-    public bool HoldBackground { get; set; } = true;
-    /// <summary>Smart mode with the five levels: before a background app is capped, idle processes are trimmed gently
-    /// (EmptyWorkingSet) when the app is over its budget. Cooldown, budget feedback and the CPU-busy limits of the
-    /// level table work through this. The hard cap still follows. Off = cap right away.</summary>
-    public bool SoftTrim { get; set; } = true;
     /// <summary>Hold mode: no process of a held app is squeezed below this many MB (avoids page-fault stutter).</summary>
     public int HoldMinProcessMB { get; set; } = 64;
-    /// <summary>Hold mode: find the LOWEST ceiling each background process can live on without stutter.
-    /// Ceilings keep shrinking step by step while the process is quiet, and grow back (and are remembered
-    /// for a few minutes) as soon as it starts page-faulting. Works on top of the intensity level.</summary>
-    public bool AutoSqueeze { get; set; } = true;
-    /// <summary>Auto-squeeze: a process is never squeezed below this many MB.</summary>
-    public int AutoMinProcessMB { get; set; } = 16;
-    /// <summary>Auto-squeeze: page faults per second (while at its ceiling) that count as "starting to stutter".</summary>
-    public int AutoFaultRate { get; set; } = 150;
-    /// <summary>Auto-squeeze: seconds of quiet before the ceiling is lowered one more step.</summary>
-    public int AutoProbeSeconds { get; set; } = 10;
     /// <summary>Hold mode: no process is squeezed below this percent of its current size when the ceiling is set.</summary>
     public int HoldKeepPercent { get; set; } = 60;
     /// <summary>Smart mode: only the PROCESS that owns an active audio stream (playing sound or using the mic) is left
@@ -95,22 +77,15 @@ internal sealed class Config
     public bool AudioProtect { get; set; } = true;
     /// <summary>Seconds an app stays protected after its audio stops.</summary>
     public double AudioProtectGraceSeconds { get; set; } = 8;
-    /// <summary>Smart mode: background apps get a lower Windows memory priority (no cap): when RAM is short Windows takes
-    /// their pages first. The app you focus gets its normal priority back at once.</summary>
-    public bool LowerMemoryPriority { get; set; } = true;
-    /// <summary>Memory priority given to background apps: 1 = very low ... 4 = below normal (5 is normal).</summary>
-    public int BackgroundMemoryPriority { get; set; } = 2;
-    /// <summary>Also give the THREADS of background apps the same low memory priority (experimental, off by default).
-    /// Processes that own an active audio stream are never touched. Needs LowerMemoryPriority.</summary>
-    public bool ThreadMemoryPriority { get; set; } = false;
-    /// <summary>Remember, per app, the lowest ceiling that was safe (kept in learned.json next to config.json).</summary>
-    public bool LearnFloors { get; set; } = true;
     /// <summary>Hold mode: the process that plays audio gets this ceiling (MB) while RAM is under pressure, instead of no ceiling at all.
     /// Generous on purpose, so playback is not affected. 0 = never limit it (old behaviour).</summary>
     public int AudioCapMB { get; set; } = 160;
     /// <summary>Hold mode: find out what a background process really needs (trim it once, see what it pulls back) and cap it at that
     /// x NeedMargin, instead of guessing with percentages and learned floors.</summary>
     public bool MeasureNeed { get; set; } = true;
+    /// <summary>Apps you switch to often are squeezed less: every time you bring an app to the front in the last 30 minutes adds this much
+    /// to its margin / keep share (0 = off). Rarely used apps keep the normal numbers.</summary>
+    public double WakeBoostPerUse { get; set; } = 0.1;
     /// <summary>Margin on top of the measured need (1.3 = 30 % extra).</summary>
     public double NeedMargin { get; set; } = 1.3;
     /// <summary>Absolute ceiling (MB) for a measured need, and raises never go past twice this. Stops one busy process (Spotify's 1.9 GB one) from
@@ -143,19 +118,29 @@ internal sealed class Config
     public bool DefaultAdaptive { get; set; } = true;
     /// <summary>Process names (no ".exe") that are NEVER limited, whatever else is set.</summary>
     public List<string> Exceptions { get; set; } = new();
+    /// <summary>Built-in protected apps (see Engine.BaseProtected) the user chose to unprotect from the right-click menu.</summary>
+    public List<string> UnprotectedBuiltIn { get; set; } = new();
     /// <summary>Seconds to wait after leaving a target app before its limit comes back (avoids flicker on Alt+Tab).</summary>
     public double RelimitDelaySeconds { get; set; } = 1.5;
     /// <summary>Small apps you open briefly again and again (Win+V, Snipping Tool, a password manager popup...) are learned
     /// while GameRamCap runs and never trimmed, so they open instantly. Set false to turn this off.</summary>
     /// <summary>The moment an app comes to the front, its limit is lifted at once and its pages are read back into RAM
     /// in the background, so a trimmed app wakes up fast. Set false to turn this off.</summary>
-    public bool PrefetchApps { get; set; } = false;
+    public bool PrefetchApps { get; set; } = true;
     /// <summary>Most MB read back into RAM per app when it is woken up (PrefetchApps and the Win+V wake-up). Lower = lighter on the disk and RAM.</summary>
     public int PrefetchMaxMB { get; set; } = 96;
+    /// <summary>Apps you come back to often (see WakeBoostPerUse) are read back up to this many times PrefetchMaxMB extra: 2 = up to 3x. 0 = same for all.</summary>
+    public double PrefetchFrequentBoost { get; set; } = 2.0;
     /// <summary>Wake-ups are skipped while free RAM is below this percent, so they never add pressure on a full machine.</summary>
     public int PrefetchMinFreePercent { get; set; } = 12;
     /// <summary>Win+V / Win+. / Win+; / Win+H: the moment the keys are pressed (before the panel shows) the Win+V host is freed and read back into RAM.</summary>
     public bool WakeWinVOnKey { get; set; } = true;
+    /// <summary>Win (Start) / Win+S / Win+Q: the moment the key is pressed (before Start or Search shows) their hosts are freed and read back into RAM.</summary>
+    public bool WakeStartOnKey { get; set; } = true;
+    /// <summary>Alt+Tab: the moment Tab is pressed with Alt held (before the switcher closes) the app you most likely switch to is freed and read back into RAM.</summary>
+    public bool WakeAltTabOnKey { get; set; } = true;
+    /// <summary>Mouse click on another app's window: the moment the button goes down (before the window comes to the front) that app is freed and read back into RAM.</summary>
+    public bool WakeClickOnMouse { get; set; } = true;
     /// <summary>Win+V / emoji host (TextInputHost) grows over time. When it is idle (not in front for 10 s) and bigger than
     /// this many MB, it is closed; Windows starts a fresh small one the next time you need it. 0 = never.</summary>
     /// <summary>Temporary diagnostics: logs the windows of the Win+V host (TextInputHost) whenever they change.</summary>
@@ -191,7 +176,7 @@ internal sealed class Config
     /// (Task Manager, browser...). They are released only when the game closes.</summary>
     public bool KeepLimitsWhileGameRuns { get; set; } = true;
     /// <summary>Treat any borderless/fullscreen foreground window as a game.</summary>
-    public bool AutoDetectFullscreen { get; set; } = true;
+    public bool AutoDetectFullscreen { get; set; } = true;   // always on (forced in ConfigStore), no longer a user option
     /// <summary>Process names (no ".exe") that always count as a game when in the foreground.</summary>
     public List<string> Games { get; set; } = new();
     /// <summary>Fullscreen apps that are NOT games (video players, browsers...).</summary>
@@ -200,8 +185,6 @@ internal sealed class Config
     /// <summary>Saved CPU rules (Apps tab, right-click): every time one of these apps runs it gets this priority
     /// and/or these CPU cores. Independent of the RAM limits above.</summary>
     public List<ProcessRule> Rules { get; set; } = new();
-    /// <summary>While a game runs, Windows Update (wuauserv) is stopped and disabled; put back exactly as it was afterwards.</summary>
-    public bool PauseWindowsUpdate { get; set; } = false;
     /// <summary>While a game runs and FREE RAM is low, clear the Windows standby list (at most once per interval).</summary>
     public bool StandbyClean { get; set; } = false;
     /// <summary>Standby cleaner: act only when free RAM (free + zeroed pages, not the standby cache) is below this many MB...</summary>
@@ -210,13 +193,7 @@ internal sealed class Config
     public int StandbyMinMB { get; set; } = 1024;
     /// <summary>Standby cleaner: minimum seconds between two cleanings.</summary>
     public int StandbyMinIntervalSeconds { get; set; } = 120;
-    public List<Target> Targets { get; set; } = new()
-    {
-        new Target { Exe = "Discord", CeilingMB = 250, MinCeilingMB = 100, MaxCeilingMB = 700 },
-        new Target { Exe = "claude", CeilingMB = 200 },
-        new Target { Exe = "steamwebhelper", CeilingMB = 150 },
-        new Target { Exe = "Spotify", CeilingMB = 120, MinCeilingMB = 48, MaxCeilingMB = 400 },
-    };
+    public List<Target> Targets { get; set; } = new();   // empty by default: you add the apps yourself
 }
 
 internal static class ConfigStore
@@ -243,7 +220,7 @@ internal static class ConfigStore
     static string LastGoodPath => Path.Combine(Dir, "config.lastgood.json");
 
     /// <summary>Focus mode is always on; it is no longer a user option.</summary>
-    static Config Force(Config c) { c.FocusMode = true; c.InputHostRecycleMB = 0; c.DebugInputHost = false; return c; }   // the Win+V probe floods the UI thread with window events: never on   // closing TextInputHost is retired: it is limited like any background app instead
+    static Config Force(Config c) { c.FocusMode = true; c.AutoDetectFullscreen = true; c.InputHostRecycleMB = 0; c.DebugInputHost = false; return c; }   // the Win+V probe floods the UI thread with window events: never on   // closing TextInputHost is retired: it is limited like any background app instead
 
     public static Config Load()
     {

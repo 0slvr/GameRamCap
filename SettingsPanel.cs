@@ -9,18 +9,15 @@ internal sealed class SettingsPanel : UserControl
     readonly Action _save;
     readonly List<(CheckBox Box, Func<Config, bool> Get, bool SmartOnly)> _boxes = new();
     readonly ToolTip _tip = new();
-    readonly ModernNumeric _delay = new() { Minimum = 0, Maximum = 120, Width = 60 };
     readonly List<(NumericUpDown Box, Func<Config, decimal> Get, bool CustomOnly)> _nums = new();
-    readonly ModernTextBox _games = new() { Multiline = true, Width = 300, Height = 90, ScrollBars = ScrollBars.Vertical };
-    readonly ModernTextBox _fsIgnore = new() { Multiline = true, Width = 300, Height = 90, ScrollBars = ScrollBars.Vertical };
     FlowLayoutPanel _smartPanel = null!;
     /// <summary>The Smart-mode fine-tuning options. The Main tab shows them inside the Smart mode card.</summary>
     public Control SmartDetails => _smartPanel;
-    /// <summary>The Settings tab: one page of cards (game detection, games &amp; lists, maintenance).</summary>
+    /// <summary>The Settings tab: one page of cards (game detection, faster wake-up, maintenance).</summary>
     public readonly List<TabPage> Pages = new();
     bool _syncing;
 
-    public SettingsPanel(Func<Config> cfg, Action save, Action<string> setProfile, Action openConfig, Action reload, Action forgetLearned, Action openLog)
+    public SettingsPanel(Func<Config> cfg, Action save, Action<string> setProfile, Action openConfig, Action reload, Action openLog, Action resetDefaults)
     {
         _cfg = cfg;
         _save = save;
@@ -70,96 +67,63 @@ internal sealed class SettingsPanel : UserControl
         Add(sm, "Only limit when RAM is low (below the level's pressure %)", c => !c.LimitWhenRamFree,  (c, v) => c.LimitWhenRamFree = !v,  true);
 
         sm.Controls.Add(Heading("Trimming and holding"));
-        Add(sm, "Gentle trim before capping (five levels)",                  c => c.SoftTrim,            (c, v) => c.SoftTrim = v,            true);
-        Add(sm, "Hold background apps (hard ceiling)",                       c => c.HoldBackground,      (c, v) => c.HoldBackground = v,      true);
-        Add(sm, "Remember safe limits per app (learned.json)",               c => c.LearnFloors,         (c, v) => c.LearnFloors = v,         true);
         Add(sm, "Measure what each background process really needs",         c => c.MeasureNeed,         (c, v) => c.MeasureNeed = v,         true);
 
-        AddNum(sm, "Big apps: never squeeze a process bigger than (MB, 0 = off)", c => c.BigProcMB, (c, v) => c.BigProcMB = (int)v, 0, 8192, 0, false,
-            "BigProcMB - protects huge processes (for example Spotify at 1.3 GB) from being squeezed to a few MB.");
-        AddNum(sm, "   ...below this share of its size (%)",                  c => c.BigProcKeepPercent, (c, v) => c.BigProcKeepPercent = (int)v, 0, 100, 0, false,
-            "BigProcKeepPercent - for example 20 keeps a 1.3 GB process at 260 MB or more.");
-
-        AddNum(sm, "   ...may grow back to at most (% of its first ceiling, 0 = no limit)", c => c.BigProcMaxGrowPercent, (c, v) => c.BigProcMaxGrowPercent = (int)v, 0, 1000, 0, false,
-            "BigProcMaxGrowPercent - 200 lets a 192 MB ceiling grow to 384 MB at most when the app page-faults. 100 = fixed ceiling.");
+        AddNumRow(sm, "Big apps:", new (string, Func<Config, decimal>, Action<Config, decimal>, decimal, decimal, string)[]
+        {
+            ("never squeeze above (MB, 0 = off)", c => c.BigProcMB, (c, v) => c.BigProcMB = (int)v, 0, 8192,
+                "BigProcMB - protects huge processes (for example Spotify at 1.3 GB) from being squeezed to a few MB."),
+            ("keep at least (%)", c => c.BigProcKeepPercent, (c, v) => c.BigProcKeepPercent = (int)v, 0, 100,
+                "BigProcKeepPercent - for example 20 keeps a 1.3 GB process at 260 MB or more."),
+            ("may grow back to (%, 0 = no limit)", c => c.BigProcMaxGrowPercent, (c, v) => c.BigProcMaxGrowPercent = (int)v, 0, 1000,
+                "BigProcMaxGrowPercent - 200 lets a 192 MB ceiling grow to 384 MB at most when the app page-faults. 100 = fixed ceiling."),
+        });
 
         Add(sm, "Give room back only when the disk is really read (ignore soft faults)", c => c.SmartFaultCheck, (c, v) => c.SmartFaultCheck = v, true);
         AddNum(sm, "   ...disk page reads per second that count as real", c => c.HardFaultPagesPerSec, (c, v) => c.HardFaultPagesPerSec = (int)v, 1, 5000, 0, false,
             "HardFaultPagesPerSec - system-wide Pages Input/sec. Below this, an app's page faults are served from RAM and are ignored.");
 
-        sm.Controls.Add(Heading("Auto-squeeze (lowest RAM without stutter)"));
-        Add(sm, "Auto-squeeze (lowest RAM without stutter)",                 c => c.AutoSqueeze,         (c, v) => c.AutoSqueeze = v,         true);
-        AddNum(sm, "Never go below (MB per process)",                        c => c.AutoMinProcessMB, (c, v) => c.AutoMinProcessMB = (int)v, 8, 1024, 0, false, "AutoMinProcessMB");
-        AddNum(sm, "Page faults per second that count as stutter",           c => c.AutoFaultRate,    (c, v) => c.AutoFaultRate = (int)v,    10, 5000, 0, false, "AutoFaultRate");
-        AddNum(sm, "Quiet seconds before lowering one more step",            c => c.AutoProbeSeconds, (c, v) => c.AutoProbeSeconds = (int)v, 3, 600, 0, false, "AutoProbeSeconds");
-
-        sm.Controls.Add(Heading("Memory priority"));
-        Add(sm, "Low memory priority for background apps",                   c => c.LowerMemoryPriority, (c, v) => c.LowerMemoryPriority = v, true);
-        Add(sm, "Also lower thread memory priority (experimental)",          c => c.ThreadMemoryPriority,(c, v) => c.ThreadMemoryPriority = v,true);
-        AddNum(sm, "Priority of background apps (1 = lowest, 4)",            c => c.BackgroundMemoryPriority, (c, v) => c.BackgroundMemoryPriority = (int)v, 1, 4, 0, false,
-            "BackgroundMemoryPriority - needs \"Low memory priority\".");
-
         sm.Controls.Add(Heading("Sound protection"));
-        Add(sm, "Protect the app that plays sound / uses the mic",           c => c.AudioProtect,        (c, v) => c.AudioProtect = v,        true);
+        Add(sm, "Protect only the process that plays sound / uses the mic",  c => c.AudioProtect,        (c, v) => c.AudioProtect = v,        true);
         AddNum(sm, "Keep protecting after the sound stops (s)", c => (decimal)c.AudioProtectGraceSeconds, (c, v) => c.AudioProtectGraceSeconds = (double)v, 0, 120, 1, false,
             "AudioProtectGraceSeconds");
 
         // ================= 2. General (both modes) =================
+        var look = Page("Appearance");
+        look.Controls.Add(Note("Accent colour for buttons, tabs and switches."));
+        var swatches = new ModernSwatches { Value = Ui.AccentName, Margin = new Padding(3, 2, 3, 4) };
+        swatches.ValueChanged += (_, _) => Ui.SetAccent(swatches.Value);
+        look.Controls.Add(swatches);
+        look.Controls.Add(Note("The Apps list: use its View button to choose the columns and the row height. Right-click its header row for update speed, always on top and the other window options."));
+
         var gen = Page("Game detection");
-        Add(gen, "Auto-detect fullscreen games",                             c => c.AutoDetectFullscreen,(c, v) => c.AutoDetectFullscreen = v,false);
-        Add(gen, "Keep limits while the game runs (even after Alt+Tab)",     c => c.KeepLimitsWhileGameRuns, (c, v) => c.KeepLimitsWhileGameRuns = v, false);
-        Add(gen, "Pause Windows Update while a game runs (restored after)", c => c.PauseWindowsUpdate, (c, v) => c.PauseWindowsUpdate = v, false);
         Add(gen, "Clear the standby list when free RAM is low while a game runs", c => c.StandbyClean, (c, v) => c.StandbyClean = v, false);
         AddNum(gen, "   ...only when free RAM is below (MB)", c => c.StandbyFreeBelowMB, (c, v) => c.StandbyFreeBelowMB = (int)v, 128, 32768, 0, false,
             "StandbyFreeBelowMB - free + zeroed memory, not counting the standby cache.");
         AddNum(gen, "   ...at most once every (seconds)", c => c.StandbyMinIntervalSeconds, (c, v) => c.StandbyMinIntervalSeconds = (int)v, 10, 3600, 0, false,
             "StandbyMinIntervalSeconds");
-        var delayRow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        delayRow.Controls.Add(new Label { Text = "Game must be in front for (s) before limiting:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) });
-        _delay.ValueChanged += (_, _) => { if (_syncing) return; _cfg().DelaySeconds = (int)_delay.Value; _save(); };
-        delayRow.Controls.Add(_delay);
-        gen.Controls.Add(delayRow);
         AddNum(gen, "Delay before the limit returns after Alt+Tab (s)", c => (decimal)c.RelimitDelaySeconds, (c, v) => c.RelimitDelaySeconds = (double)v, 0, 60, 1, false,
             "RelimitDelaySeconds - avoids flicker when you switch windows.");
 
         // ---- Faster wake-up (Win+V and apps) ----
         var wake = Page("Faster wake-up");
-        wake.Controls.Add(Note("Trimmed apps are read back from disk when you need them. These options start that earlier. They cost some disk and RAM, so tune or turn them off on a slow HDD."));
-        Add(wake, "Win+V panel: wake up the moment the keys are pressed",    c => c.WakeWinVOnKey, (c, v) => c.WakeWinVOnKey = v, false);
-        Add(wake, "Apps: wake up when they come to the front",              c => c.PrefetchApps,  (c, v) => c.PrefetchApps = v,  false);
-        AddNum(wake, "Most MB read back per app",                           c => c.PrefetchMaxMB, (c, v) => c.PrefetchMaxMB = (int)v, 16, 1024, 0, false,
+        wake.Controls.Add(Note("An app that was squeezed opens a bit slower. This feature reloads it in the background just before you switch to it."));
+        wake.Controls.Add(Note("Turn it ON if you have an SSD and switch between apps often.\nTurn it OFF if you have a slow hard drive (HDD), or you want the least extra disk activity."));
+        Add(wake, "Faster wake-up: reload apps just before I switch to them (Win+V, Start / Search, Alt+Tab, mouse click)",
+            c => c.WakeWinVOnKey && c.WakeStartOnKey && c.WakeAltTabOnKey && c.WakeClickOnMouse && c.PrefetchApps,
+            (c, v) => { c.WakeWinVOnKey = v; c.WakeStartOnKey = v; c.WakeAltTabOnKey = v; c.WakeClickOnMouse = v; c.PrefetchApps = v; }, false);
+        AddNum(wake, "Max MB reloaded per app (lower = lighter on disk)",                           c => c.PrefetchMaxMB, (c, v) => c.PrefetchMaxMB = (int)v, 16, 1024, 0, false,
             "PrefetchMaxMB - lower is lighter on disk and RAM; higher wakes big apps more fully.");
-        AddNum(wake, "Skip wake-ups when free RAM is below (%)",            c => c.PrefetchMinFreePercent, (c, v) => c.PrefetchMinFreePercent = (int)v, 0, 50, 0, false,
+        AddNum(wake, "Skip it when free RAM is below (%)  (protects games)",            c => c.PrefetchMinFreePercent, (c, v) => c.PrefetchMinFreePercent = (int)v, 0, 50, 0, false,
             "PrefetchMinFreePercent - protects a full machine (for example while a game runs).");
 
-        // ================= 4. Games & lists =================
-        var lst = Page("Games & lists", "Games and lists");
-        lst.Controls.Add(Heading("Games (always treated as a game)"));
-        lst.Controls.Add(Note("One name per line, no .exe."));
-        lst.Controls.Add(_games);
-        lst.Controls.Add(Heading("Fullscreen apps that are NOT games"));
-        lst.Controls.Add(Note("Browsers, video players... one name per line."));
-        lst.Controls.Add(_fsIgnore);
-        var saveLists = Btn("Save lists", () =>
-        {
-            _cfg().Games = Lines(_games.Text);
-            _cfg().FullscreenIgnore = Lines(_fsIgnore.Text);
-            _save();
-        });
-        saveLists.Margin = new Padding(3, 8, 3, 3);
-        lst.Controls.Add(saveLists);
-        lst.Controls.Add(Heading("Never touched (built in)"));
-        lst.Controls.Add(Note("System processes, security / anti-cheat services, the shell and recording tools are always protected. " +
-                              "Add your own with Exceptions (Main tab or Apps tab)."));
-        lst.Controls.Add(Btn("Show protected apps...", ShowProtected));
-
-        // ================= 5. Maintenance =================
+        // ================= 4. Maintenance =================
         var tl = Page("Maintenance");
         var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(Ui.ContentWidth, 0) };
         buttons.Controls.Add(Btn("Open config file", openConfig));
         buttons.Controls.Add(Btn("Reload config", reload));
-        buttons.Controls.Add(Btn("Forget learned limits", forgetLearned));
         buttons.Controls.Add(Btn("Open log file", openLog));
+        buttons.Controls.Add(Btn("Reset to defaults", resetDefaults));
         tl.Controls.Add(buttons);
 
         Sync();
@@ -180,21 +144,6 @@ internal sealed class SettingsPanel : UserControl
         };
         _boxes.Add((box, get, smartOnly));
         flow.Controls.Add(box);
-    }
-
-    static List<string> Lines(string text) =>
-        text.Split(new[] { '\r', '\n', ',' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(x => x.Trim()).Select(x => x.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? x[..^4] : x)
-            .Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-
-    void ShowProtected()
-    {
-        var names = string.Join(Environment.NewLine, Engine.Protected.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
-        using var f = new Form { Text = "Protected apps (never limited)", ClientSize = new Size(360, 460), StartPosition = FormStartPosition.CenterParent };
-        f.Controls.Add(new ModernTextBox { Multiline = true, ReadOnly = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, Text = names });
-        f.Font = Ui.Base;
-        Ui.Polish(f);
-        f.ShowDialog(this);
     }
 
     void AddNum(FlowLayoutPanel flow, string text, Func<Config, decimal> get, Action<Config, decimal> set,
@@ -220,6 +169,32 @@ internal sealed class SettingsPanel : UserControl
         _nums.Add((num, get, customOnly));
     }
 
+    /// <summary>One line holding several related number boxes (label, then each box with its own small caption).</summary>
+    void AddNumRow(FlowLayoutPanel flow, string title,
+                   (string Text, Func<Config, decimal> Get, Action<Config, decimal> Set, decimal Min, decimal Max, string Tip)[] items)
+    {
+        var row = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, MaximumSize = new Size(Ui.ContentWidth, 0) };
+        row.Controls.Add(new Label { Text = title, AutoSize = true, Margin = new Padding(3, 6, 6, 3) });
+        foreach (var it in items)
+        {
+            var set = it.Set;
+            var lbl = new Label { Text = it.Text, AutoSize = true, Margin = new Padding(8, 6, 3, 3) };
+            var num = new ModernNumeric { Minimum = it.Min, Maximum = it.Max, DecimalPlaces = 0, Increment = 1m, Width = 70 };
+            _tip.SetToolTip(lbl, it.Tip);
+            _tip.SetToolTip(num, it.Tip);
+            num.ValueChanged += (_, _) =>
+            {
+                if (_syncing) return;
+                set(_cfg(), num.Value);
+                _save();
+            };
+            row.Controls.Add(lbl);
+            row.Controls.Add(num);
+            _nums.Add((num, it.Get, false));
+        }
+        flow.Controls.Add(row);
+    }
+
     /// <summary>Re-reads the config into the controls (after a reload, a mode change, or a tray action).</summary>
     public void Sync()
     {
@@ -227,15 +202,11 @@ internal sealed class SettingsPanel : UserControl
         try
         {
             var c = _cfg();
-            _delay.Value = Math.Clamp(c.DelaySeconds, 0, 120);
-            _delay.Enabled = !c.AlwaysLimit;
             foreach (var (box, get, smartOnly) in _boxes)
             {
                 box.Checked = get(c);
                 string? why = null;
                 if (smartOnly && !c.IsSmart()) why = "Only works in Smart mode (the Settings tab).";
-                else if (box.Text.StartsWith("Auto-squeeze") && !c.HoldBackground) why = "Needs \"Hold background apps\" turned on.";
-                else if (box.Text.StartsWith("Also lower thread") && !c.LowerMemoryPriority) why = "Needs \"Low memory priority for background apps\" turned on.";
                 box.Enabled = why == null;
                 _tip.SetToolTip(box, why ?? "");
             }
@@ -244,8 +215,6 @@ internal sealed class SettingsPanel : UserControl
                 num.Value = Math.Clamp(get(c), num.Minimum, num.Maximum);
                 num.Enabled = !customOnly || !c.IsSmart() || Presets.IsCustom(c);
             }
-            _games.Text = string.Join(Environment.NewLine, c.Games);
-            _fsIgnore.Text = string.Join(Environment.NewLine, c.FullscreenIgnore);
         }
         finally { _syncing = false; }
     }

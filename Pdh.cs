@@ -201,3 +201,68 @@ internal static class PagingMonitor
         }
     }
 }
+
+/// <summary>How busy the disk and the network are, as a percentage (like Task Manager's Disk and Network columns).</summary>
+internal static class SystemLoad
+{
+    static readonly object Lock = new();
+    static PdhQuery? _q;
+    static IntPtr _c;
+    static bool _failed;
+    static double? _disk;
+    static DateTime _at = DateTime.MinValue;
+    static double _linkBitsPerSec;
+    static DateTime _linkAt = DateTime.MinValue;
+
+    /// <summary>Disk busy time, 0 - 100, or null until the second sample / when the counter is missing.</summary>
+    public static double? DiskPercent()
+    {
+        lock (Lock)
+        {
+            if (_failed) return null;
+            var now = DateTime.UtcNow;
+            if (_q == null)
+            {
+                _q = PdhQuery.TryOpen();
+                _c = _q?.Add(@"\PhysicalDisk(_Total)\% Disk Time") ?? IntPtr.Zero;
+                if (_q == null || _c == IntPtr.Zero) { _q?.Dispose(); _q = null; _failed = true; return null; }
+                _q.Collect();
+                _at = now;
+                return null;
+            }
+            if ((now - _at).TotalMilliseconds >= 900 && _q.Collect())
+            {
+                _at = now;
+                _disk = _q.Value(_c);
+            }
+            return _disk is double d ? Math.Clamp(d, 0, 100) : null;
+        }
+    }
+
+    /// <summary>Network traffic (bytes per second) as a share of the fastest connected adapter, 0 - 100.</summary>
+    public static double? NetPercent(double bytesPerSec)
+    {
+        lock (Lock)
+        {
+            if ((DateTime.UtcNow - _linkAt).TotalSeconds > 30)
+            {
+                _linkAt = DateTime.UtcNow;
+                double best = 0;
+                try
+                {
+                    foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                        if (nic.NetworkInterfaceType is System.Net.NetworkInformation.NetworkInterfaceType.Loopback
+                            or System.Net.NetworkInformation.NetworkInterfaceType.Tunnel) continue;
+                        best = Math.Max(best, nic.Speed);
+                    }
+                }
+                catch { }
+                _linkBitsPerSec = best;
+            }
+            if (_linkBitsPerSec <= 0) return null;
+            return Math.Clamp(bytesPerSec * 8 / _linkBitsPerSec * 100, 0, 100);
+        }
+    }
+}

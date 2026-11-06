@@ -162,6 +162,9 @@ internal sealed partial class Engine
                         continue;
                     }
                     Logger.Write($"Limited {t.Exe} (pid {pid}) to {ceiling / MB} MB (was using {wsNow / MB} MB).");
+                    var lp = new List<Proc> { new Proc { Pid = pid } };
+                    LowerPriority(lp);
+                    LowerThreads(lp);
 
                     _limited[pid] = new Limited
                     {
@@ -179,6 +182,7 @@ internal sealed partial class Engine
         // Forget processes that exited (their limits vanish with them).
         foreach (var pid in _limited.Keys.Where(k => !alive.Contains(k)).ToList())
             _limited.Remove(pid);
+        RestorePriority(_prio.Keys.Union(_threadPrio.Keys).Where(k => !alive.Contains(k)).ToList());
     }
 
     /// <summary>Lifts the limit from every running process with this name (used when it gets focus).</summary>
@@ -190,6 +194,7 @@ internal sealed partial class Engine
             try { pids.Add(p.Id); }
             finally { p.Dispose(); }
         }
+        RestorePriority(pids);   // the app is wanted again: normal memory priority
         return ReleasePids(pids);
     }
 

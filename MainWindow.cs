@@ -10,12 +10,13 @@ internal sealed class MainWindow : Form
 
     readonly ModernTabs _tabs = new(false) { Dock = DockStyle.Fill };
     readonly TabPage _homePage = new("Main"), _appsPage = new("Apps");
-    readonly TabPage _settingsPage, _listsPage;
+    readonly TabPage _settingsPage;
     readonly TargetsForm _targets = new();
     bool _exiting;
 
     public MainWindow(Control home, SettingsPanel settings)
     {
+        Icon = AppIcon.Window;
         Text = "GameRamCap v" + (System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "");
         Font = Ui.Base;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -23,18 +24,41 @@ internal sealed class MainWindow : Form
         MinimumSize = new Size(820, 560);
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = true;
+        DoubleBuffered = true;
 
         _homePage.Controls.Add(home);
 
         Embed(_appsPage, _targets);
-        _settingsPage = settings.Pages[0];   // one scrolling page: Mode, General, Games & lists
-
-        _listsPage = settings.Pages[1];      // Games & lists: its own tab
-        _tabs.TabPages.AddRange(new[] { _homePage, _appsPage, _listsPage, _settingsPage });
+        _settingsPage = settings.Pages[0];   // one scrolling page of cards
+        _tabs.TabPages.AddRange(new[] { _homePage, _appsPage, _settingsPage });
+        _tabs.PinLast = true;   // Settings sits apart, at the right end of the top bar
         Controls.Add(_tabs);
         Ui.Polish(this);
         _tabs.SelectedIndexChanged += (_, _) => RefreshCustomState();
         RefreshCustomState();
+        ApplyWindowPrefs();
+        UiPrefs.WindowPrefsChanged += ApplyWindowPrefs;
+    }
+
+    /// <summary>Settings > Window: always on top, and the Apps list's update speed.</summary>
+    void ApplyWindowPrefs()
+    {
+        if (IsDisposed) return;
+        TopMost = UiPrefs.Current.AlwaysOnTop;
+        _targets.ApplyUpdateSpeed();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        // "Hide when minimized": leave the taskbar too; the tray icon brings the window back
+        if (WindowState == FormWindowState.Minimized && UiPrefs.Current.HideWhenMinimized && Visible) BeginInvoke(new Action(Hide));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) UiPrefs.WindowPrefsChanged -= ApplyWindowPrefs;
+        base.Dispose(disposing);
     }
 
     /// <summary>Apps numbers only matter in Hard mode / own-limit rows.</summary>

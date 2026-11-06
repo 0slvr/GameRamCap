@@ -17,6 +17,7 @@ internal sealed class ExceptionsForm : Form
     public ExceptionsForm(Config cfg)
     {
         _cfg = cfg;
+        Icon = AppIcon.Window;
         Text = "GameRamCap - exceptions (never limited)";
         StartPosition = FormStartPosition.CenterParent;
         Width = 760; Height = 500;
@@ -35,8 +36,8 @@ internal sealed class ExceptionsForm : Form
         left.Controls.Add(_search, 0, 1);
         left.Controls.Add(_running, 0, 2);
         var lb = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        var refresh = new Button { Text = "Refresh", AutoSize = true };
-        var add = new Button { Text = "Add  →", AutoSize = true };
+        var refresh = new ModernButton { Text = "Refresh", AutoSize = true };
+        var add = new ModernButton { Text = "Add  →", AutoSize = true };
         lb.Controls.Add(refresh);
         lb.Controls.Add(add);
         left.Controls.Add(lb, 0, 3);
@@ -49,8 +50,8 @@ internal sealed class ExceptionsForm : Form
         right.Controls.Add(Ui.Heading("Never limited"), 0, 0);
         right.Controls.Add(_list, 0, 1);
         var rb = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        var remove = new Button { Text = "Remove selected", AutoSize = true };
-        var addManual = new Button { Text = "Add by name", AutoSize = true };
+        var remove = new ModernButton { Text = "Remove selected", AutoSize = true };
+        var addManual = new ModernButton { Text = "Add by name", AutoSize = true };
         rb.Controls.Add(remove);
         rb.Controls.Add(_manual);
         rb.Controls.Add(addManual);
@@ -63,7 +64,7 @@ internal sealed class ExceptionsForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(left, 0, 0);
         root.Controls.Add(right, 1, 0);
-        var close = new Button { Text = "Close", AutoSize = true };
+        var close = new ModernButton { Text = "Close", AutoSize = true };
         var bottom = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
         bottom.Controls.Add(close);
         root.Controls.Add(bottom, 0, 1);

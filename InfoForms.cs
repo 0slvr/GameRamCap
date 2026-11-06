@@ -9,7 +9,7 @@ internal static partial class InfoForms
     {
         var f = new Form
         {
-            Text = title, ClientSize = size, MinimumSize = new Size(560, 320), StartPosition = FormStartPosition.CenterParent,
+            Icon = AppIcon.Window, Text = title, ClientSize = size, MinimumSize = new Size(560, 320), StartPosition = FormStartPosition.CenterParent,
             ShowInTaskbar = false, Font = Ui.Base,
         };
         list.Dock = DockStyle.Fill;
@@ -40,8 +40,8 @@ internal static partial class InfoForms
         var note = Ui.Note("RAM and CPU of every app, last 60 minutes (kept in memory; it starts empty each time GameRamCap starts). " +
                            "Amber = grew by 300 MB or more in 10 minutes: look for a memory leak or a runaway app.");
         using var f = Shell("History", new Size(760, 480), list, out var buttons, note);
-        var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        var refresh = new Button { Text = "Refresh", AutoSize = true };
+        var close = new ModernButton { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+        var refresh = new ModernButton { Text = "Refresh", AutoSize = true };
         buttons.Controls.Add(close);
         buttons.Controls.Add(refresh);
         f.CancelButton = close;
@@ -83,8 +83,8 @@ internal static partial class InfoForms
         var note = Ui.Note("Open IPv4 connections of " + string.Join(", ", names) + ". This shows who is connected to where; " +
                            "Windows has no per-app traffic speed without extra tracing.");
         using var f = Shell("Connections", new Size(760, 460), list, out var buttons, note);
-        var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        var refresh = new Button { Text = "Refresh", AutoSize = true };
+        var close = new ModernButton { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+        var refresh = new ModernButton { Text = "Refresh", AutoSize = true };
         buttons.Controls.Add(close);
         buttons.Controls.Add(refresh);
         f.CancelButton = close;

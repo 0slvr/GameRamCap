@@ -60,6 +60,16 @@ internal static class Native
         return 100.0 * s.ullAvailPhys / s.ullTotalPhys;
     }
 
+    static long _totalRam;
+    /// <summary>Installed physical RAM in bytes (0 if unknown).</summary>
+    public static long TotalRam()
+    {
+        if (_totalRam > 0) return _totalRam;
+        var s = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        if (GlobalMemoryStatusEx(ref s)) _totalRam = (long)s.ullTotalPhys;
+        return _totalRam;
+    }
+
     /// <summary>Current working set and cumulative page-fault count of a process.</summary>
     public static bool GetMemory(int pid, out long workingSet, out long pageFaults)
     {
@@ -318,6 +328,124 @@ internal static class Native
         finally { CloseHandle(h); }
     }
 
+    // ---- Hot set: remember which pages a process had resident BEFORE it was squeezed, and read exactly those back later ----
+    const uint PROCESS_VM_READ = 0x0010;
+
+    [DllImport("kernel32.dll", EntryPoint = "K32QueryWorkingSet", SetLastError = true)]
+    static extern bool K32QueryWorkingSet(IntPtr process, IntPtr buffer, uint size);
+
+    /// <summary>The resident pages of a process at one moment, as sorted runs of virtual pages (start page number + page count).</summary>
+    public sealed class ResidentSet
+    {
+        public ulong[] Starts = Array.Empty<ulong>();
+        public uint[] Counts = Array.Empty<uint>();
+        public long Pages;
+        public DateTime Taken = DateTime.UtcNow;
+        public DateTime ProcStart;
+    }
+
+    /// <summary>Reads the list of pages that are in the process' working set right now. null when it cannot be read or is empty.</summary>
+    public static ResidentSet? CaptureResident(int pid)
+    {
+        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
+        if (h == IntPtr.Zero) return null;
+        IntPtr buf = IntPtr.Zero;
+        try
+        {
+            long entries = 1 << 16;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                long bytes = (entries + 1) * IntPtr.Size;
+                if (bytes > 256L * 1024 * 1024) return null;
+                buf = Marshal.AllocHGlobal((IntPtr)bytes);
+                if (K32QueryWorkingSet(h, buf, (uint)bytes))
+                {
+                    long n = Marshal.ReadIntPtr(buf).ToInt64();
+                    if (n <= 0 || n > entries) return null;
+                    var raw = new long[n];
+                    Marshal.Copy(IntPtr.Add(buf, IntPtr.Size), raw, 0, (int)n);
+                    var pages = new ulong[n];
+                    for (long i = 0; i < n; i++) pages[i] = (ulong)raw[i] >> 12;
+                    Array.Sort(pages);
+                    var starts = new List<ulong>(); var counts = new List<uint>();
+                    ulong start = pages[0]; uint len = 1;
+                    for (long i = 1; i < n; i++)
+                    {
+                        if (pages[i] == start + len) len++;
+                        else if (pages[i] < start + len) continue;      // duplicate
+                        else { starts.Add(start); counts.Add(len); start = pages[i]; len = 1; }
+                    }
+                    starts.Add(start); counts.Add(len);
+                    return new ResidentSet { Starts = starts.ToArray(), Counts = counts.ToArray(), Pages = n };
+                }
+                int err = Marshal.GetLastWin32Error();
+                long need = Marshal.ReadIntPtr(buf).ToInt64();           // ERROR_BAD_LENGTH: the first entry holds the number of entries needed
+                Marshal.FreeHGlobal(buf); buf = IntPtr.Zero;
+                if (err != 24 || need <= 0) return null;
+                entries = need + need / 4 + 1024;
+            }
+            return null;
+        }
+        catch { return null; }
+        finally
+        {
+            if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf);
+            CloseHandle(h);
+        }
+    }
+
+    /// <summary>Asks Windows to read back exactly the pages of a saved resident set (only those that are still committed), up to maxBytes.
+    /// Returns how many bytes were requested.</summary>
+    public static long PrefetchResident(int pid, ResidentSet set, long maxBytes)
+    {
+        if (set.Starts.Length == 0 || maxBytes < 4096) return 0;
+        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_VM_OPERATION, false, pid);
+        if (h == IntPtr.Zero) return 0;
+        try
+        {
+            var list = new List<WIN32_MEMORY_RANGE_ENTRY>();
+            long total = 0;
+            int idx = 0, n = set.Starts.Length, guard = 0;
+            long addr = 0;
+            const long MaxAddr = 0x7FFFFFFEFFFF;
+            while (addr < MaxAddr && total < maxBytes && idx < n && guard++ < 200000)
+            {
+                if (VirtualQueryEx(h, (IntPtr)addr, out var mbi, (nuint)Marshal.SizeOf<MEMORY_BASIC_INFORMATION>()) == 0) break;
+                long size = (long)mbi.RegionSize;
+                if (size <= 0) break;
+                ulong rb = (ulong)(long)mbi.BaseAddress, re = rb + (ulong)size;
+                bool ok = mbi.State == 0x1000                       // MEM_COMMIT
+                    && (mbi.Protect & 0x101) == 0                   // not PAGE_NOACCESS / PAGE_GUARD
+                    && mbi.Protect != 0
+                    && mbi.Type != 0x40000;                         // not MEM_MAPPED (device / shared memory)
+                if (ok)
+                {
+                    while (idx < n && (set.Starts[idx] + set.Counts[idx]) * 4096UL <= rb) idx++;
+                    for (int j = idx; j < n && set.Starts[j] * 4096UL < re && total < maxBytes; j++)
+                    {
+                        ulong s = Math.Max(set.Starts[j] * 4096UL, rb);
+                        ulong e = Math.Min((set.Starts[j] + set.Counts[j]) * 4096UL, re);
+                        if (e <= s) continue;
+                        long len = Math.Min((long)(e - s), maxBytes - total) & ~4095L;
+                        if (len <= 0) break;
+                        list.Add(new WIN32_MEMORY_RANGE_ENTRY { VirtualAddress = (IntPtr)(long)s, NumberOfBytes = (nuint)len });
+                        total += len;
+                    }
+                }
+                long next = (long)rb + size;
+                if (next <= addr) break;
+                addr = next;
+            }
+            for (int i = 0; i < list.Count; i += 256)
+            {
+                var chunk = list.GetRange(i, Math.Min(256, list.Count - i)).ToArray();
+                try { PrefetchVirtualMemory(h, (nuint)chunk.Length, chunk, 0); } catch { return total; }
+            }
+            return total;
+        }
+        finally { CloseHandle(h); }
+    }
+
     delegate void WinEventProc(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
 
     [DllImport("user32.dll")]
@@ -379,6 +507,31 @@ internal static class Native
     static long _panelKeyTicks;
     /// <summary>Raised (from the keyboard hook, so keep it fast) the instant Win+V / Win+. / Win+; / Win+H is pressed.</summary>
     public static Action? OnPanelKey;
+    /// <summary>Raised (from the keyboard hook, so keep it fast) the instant Win, Win+S or Win+Q is pressed (Start menu / Search).</summary>
+    public static Action? OnStartKey;
+    /// <summary>Raised (from the keyboard hook, so keep it fast) the instant Tab is pressed while Alt is held (Alt+Tab).</summary>
+    public static Action? OnAltTabKey;
+    /// <summary>Raised (from the mouse hook, so keep it fast) when any mouse button (left, right, middle, X1/X2) goes down, with the screen position.</summary>
+    public static Action<int, int>? OnMouseDown;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct CLICKPT { public int X, Y; }
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(CLICKPT pt);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+    /// <summary>The process that owns the top-level window under a screen point, or 0.</summary>
+    public static int PidAtPoint(int x, int y)
+    {
+        try
+        {
+            var h = WindowFromPoint(new CLICKPT { X = x, Y = y });
+            if (h == IntPtr.Zero) return 0;
+            var root = GetAncestor(h, 2 /* GA_ROOT */);
+            GetWindowThreadProcessId(root != IntPtr.Zero ? root : h, out uint pid);
+            return (int)pid;
+        }
+        catch { return 0; }
+    }
 
     /// <summary>UTC ticks of the last Win+V / Win+. / Win+; / Win+H press, or 0 if none yet.</summary>
     public static long LastInputPanelKeyTicks => Interlocked.Read(ref _panelKeyTicks);
@@ -395,6 +548,14 @@ internal static class Native
                 if (nCode >= 0 && (msg == 0x0100 || msg == 0x0104))   // WM_KEYDOWN / WM_SYSKEYDOWN
                 {
                     int vk = Marshal.ReadInt32(lParam);               // KBDLLHOOKSTRUCT.vkCode
+                    if (vk == 0x5B || vk == 0x5C || ((vk == 0x53 || vk == 0x51) && ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) != 0))   // Win, or Win+S / Win+Q
+                    {
+                        try { OnStartKey?.Invoke(); } catch { }
+                    }
+                    if (vk == 0x09 && (GetAsyncKeyState(0x12) & 0x8000) != 0)   // Tab with Alt held
+                    {
+                        try { OnAltTabKey?.Invoke(); } catch { }
+                    }
                     if ((vk == 0x56 || vk == 0xBE || vk == 0xBA || vk == 0x48)   // V . ; H
                         && ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) != 0)   // left or right Win held
                     {
@@ -409,20 +570,22 @@ internal static class Native
             return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         };
         _kbHook = SetWindowsHookExW(13 /* WH_KEYBOARD_LL */, _kbProc, GetModuleHandleW(null), 0);
-        if (mouseMarks)
+        _msProc = (nCode, wParam, lParam) =>
         {
-            _msProc = (nCode, wParam, lParam) =>
+            try
             {
-                try
+                int msg = (int)wParam;
+                if (nCode >= 0 && (msg == 0x0201 || msg == 0x0204 || msg == 0x0207 || msg == 0x020B))   // left / right / middle / X1-X2 button down: tell the engine where (it does the work off the hook thread)
                 {
-                    int msg = (int)wParam;
-                    if (nCode >= 0 && (msg == 0x0201 || msg == 0x0204) && NearPanelKey()) Mark("click");   // left / right button down
+                    var cb = OnMouseDown;
+                    if (cb != null) cb(Marshal.ReadInt32(lParam), Marshal.ReadInt32(lParam, 4));   // MSLLHOOKSTRUCT.pt
                 }
-                catch { }
-                return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
-            };
-            _msHook = SetWindowsHookExW(14 /* WH_MOUSE_LL */, _msProc, GetModuleHandleW(null), 0);
-        }
+                if (mouseMarks && nCode >= 0 && (msg == 0x0201 || msg == 0x0204) && NearPanelKey()) Mark("click");   // diagnostics only
+            }
+            catch { }
+            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        };
+        _msHook = SetWindowsHookExW(14 /* WH_MOUSE_LL */, _msProc, GetModuleHandleW(null), 0);
     }
 
     public static void StopWatchingInputPanelKeys()

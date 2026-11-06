@@ -31,6 +31,29 @@ internal sealed partial class Engine
     internal static readonly HashSet<string> BurstApps = new(StringComparer.OrdinalIgnoreCase)
         { "TextInputHost", "StartMenuExperienceHost", "SearchHost" };
     string _lastFgEvent = "";
+    // How often each app was brought to the front in the last 30 minutes: apps you come back to often pay a bigger price for being
+    // squeezed (waking up from disk), so they are squeezed less. Apps you never touch keep the normal, strong numbers.
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, Queue<DateTime>> _uses = new(StringComparer.OrdinalIgnoreCase);
+    void RecordUse(string name)
+    {
+        var q = _uses.GetOrAdd(name, _ => new Queue<DateTime>());
+        var now = DateTime.UtcNow;
+        lock (q)
+        {
+            if (q.Count > 0 && (now - q.Last()).TotalSeconds < 5) return;   // one use, not a flicker
+            q.Enqueue(now);
+            while (q.Count > 0 && (now - q.Peek()).TotalMinutes > 30) q.Dequeue();
+        }
+    }
+    /// <summary>0 = never used lately .. up to 1.0: the extra share this app is spared. Config.WakeBoostPerUse x uses in the last 30 minutes.</summary>
+    double WakeBoost(string name)
+    {
+        if (Config.WakeBoostPerUse <= 0 || !_uses.TryGetValue(name, out var q)) return 0;
+        var now = DateTime.UtcNow;
+        int n;
+        lock (q) { while (q.Count > 0 && (now - q.Peek()).TotalMinutes > 30) q.Dequeue(); n = q.Count; }
+        return Math.Min(1.0, n * Config.WakeBoostPerUse);
+    }
     string _dbgSig = "";
 
     /// <summary>Diagnostics for Win+V: logs TextInputHost's windows (and which window is in front) only when they change.</summary>
@@ -125,6 +148,110 @@ internal sealed partial class Engine
         if (Config.DebugInputHost) Logger.Write("InputHost: panel opened - TextInputHost limit lifted");
     }
 
+    // Most recently used apps (newest first), kept from the foreground events. Alt+Tab goes to the second one first, then the third, ...
+    readonly List<string> _mru = new();
+    readonly object _mruLock = new();
+    static readonly HashSet<string> MruSkip = new(StringComparer.OrdinalIgnoreCase)
+        { "explorer", "TextInputHost", "StartMenuExperienceHost", "SearchHost", "ShellExperienceHost", "ApplicationFrameHost", "GameRamCap" };
+    void TrackMru(string name)
+    {
+        if (MruSkip.Contains(name)) return;
+        lock (_mruLock)
+        {
+            if (_mru.Count > 0 && string.Equals(_mru[0], name, StringComparison.OrdinalIgnoreCase)) return;
+            _mru.RemoveAll(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+            _mru.Insert(0, name);
+            if (_mru.Count > 6) _mru.RemoveAt(_mru.Count - 1);
+        }
+    }
+
+    DateTime _altTabAt = DateTime.MinValue, _altTargetAt = DateTime.MinValue;
+    int _altTabCount;
+    string _altTarget = "";
+    /// <summary>Called the moment Alt+Tab is pressed, BEFORE the switcher closes: the first Tab wakes the previous app, each further Tab (within
+    /// 1.5 s) the next one back. Its limit is lifted and its trimmed pages are read back into RAM while you are still choosing.</summary>
+    public void OnAltTabPressed()
+    {
+        if (!Enabled || !Config.Enabled || !Config.WakeAltTabOnKey) return;
+        var now = DateTime.UtcNow;
+        string target;
+        lock (_mruLock)
+        {
+            _altTabCount = (now - _altTabAt).TotalMilliseconds < 1500 ? _altTabCount + 1 : 1;
+            _altTabAt = now;
+            int idx = Math.Min(_altTabCount, _mru.Count - 1);
+            if (idx <= 0) return;                                   // nothing to switch to
+            target = _mru[idx];
+            if (string.Equals(target, _altTarget, StringComparison.OrdinalIgnoreCase) && (now - _altTargetAt).TotalSeconds < 2) return;   // key repeat
+            _altTarget = target; _altTargetAt = now;
+        }
+        lock (Gate)
+        {
+            if (!_exempt.Contains(target) && !IsException(target))
+            {
+                if (_groups.TryGetValue(target, out var g)) { g.Holding = false; g.CritDone = false; }
+                if (_limited.Count > 0) ReleaseByName(target);
+            }
+        }
+        double freePct = Native.FreeRamPercent();
+        if (freePct >= 0 && freePct < Config.PrefetchMinFreePercent) return;   // limit already lifted; just do not pull more pages in
+        WakeApp(target, WakeBudget(target));
+    }
+
+    DateTime _clickTargetAt = DateTime.MinValue;
+    string _clickTarget = "";
+    /// <summary>Called when any mouse button (left, right, middle, X1/X2) goes down. If the click lands on a window of another app (not the one in front), that app is
+    /// freed and its trimmed pages are read back into RAM while Windows is still bringing the window up.</summary>
+    public void OnClickAt(int x, int y)
+    {
+        if (!Enabled || !Config.Enabled || !Config.WakeClickOnMouse) return;
+        int pid = Native.PidAtPoint(x, y);
+        if (pid <= 4) return;
+        Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint fpid);
+        if ((uint)pid == fpid) return;                      // click inside the app already in front: nothing to wake
+        string name;
+        try { using var p = Process.GetProcessById(pid); name = p.ProcessName; }
+        catch { return; }
+        if (name.Length == 0 || MruSkip.Contains(name)) return;   // shell / Start / UWP frame: handled elsewhere
+        var now = DateTime.UtcNow;
+        if (string.Equals(name, _clickTarget, StringComparison.OrdinalIgnoreCase) && (now - _clickTargetAt).TotalSeconds < 2) return;
+        _clickTarget = name; _clickTargetAt = now;
+        lock (Gate)
+        {
+            if (!_exempt.Contains(name) && !IsException(name))
+            {
+                if (_groups.TryGetValue(name, out var g)) { g.Holding = false; g.CritDone = false; }
+                if (_limited.Count > 0) ReleaseByName(name);
+            }
+        }
+        double freePct = Native.FreeRamPercent();
+        if (freePct >= 0 && freePct < Config.PrefetchMinFreePercent) return;   // limit already lifted; just do not pull more pages in
+        WakeApp(name, WakeBudget(name));
+    }
+
+    static readonly string[] StartHosts = { "StartMenuExperienceHost", "SearchHost", "ShellExperienceHost" };
+    DateTime _startKeyAt = DateTime.MinValue;
+    /// <summary>Called the moment Win, Win+S or Win+Q is pressed, BEFORE Start / Search opens: lifts the limit of their hosts and reads their
+    /// trimmed pages back into RAM in parallel with Windows creating the window (same idea as the Win+V wake-up).</summary>
+    public void OnStartKeyPressed()
+    {
+        if (!Enabled || !Config.Enabled || !Config.WakeStartOnKey) return;
+        var now = DateTime.UtcNow;
+        if ((now - _startKeyAt).TotalSeconds < 3) return;   // key repeat, or Win+other shortcuts in a row
+        _startKeyAt = now;
+        lock (Gate)
+        {
+            foreach (var host in StartHosts)
+            {
+                if (_groups.TryGetValue(host, out var g)) { g.Holding = false; g.CritDone = false; }
+                if (_limited.Count > 0) ReleaseByName(host);
+            }
+        }
+        double freePct = Native.FreeRamPercent();
+        if (freePct >= 0 && freePct < Config.PrefetchMinFreePercent) return;   // limits already lifted above; just do not pull more pages in
+        foreach (var host in StartHosts) WakeApp(host, WakeBudget(host));
+    }
+
     DateTime _panelKeyAt = DateTime.MinValue;
     /// <summary>Called the moment Win+V (or Win+. / Win+; / Win+H) is pressed, BEFORE the panel opens: lifts TextInputHost's limit and starts
     /// reading its trimmed pages back into RAM in parallel with Windows creating the window, so the panel opens without waiting for the disk.</summary>
@@ -141,13 +268,7 @@ internal sealed partial class Engine
         }
         double freePct = Native.FreeRamPercent();
         if (freePct >= 0 && freePct < Config.PrefetchMinFreePercent) return;   // limit already lifted above; just do not pull more pages in
-        long budget = Math.Max(1, Config.PrefetchMaxMB) * 1024L * 1024;
-        foreach (var kv in Native.ProcessMap())
-        {
-            if (budget <= 0) break;
-            if (!string.Equals(kv.Value.Name, "TextInputHost", StringComparison.OrdinalIgnoreCase)) continue;
-            budget -= Native.Prefetch(kv.Key, budget);
-        }
+        WakeApp("TextInputHost", WakeBudget("TextInputHost"));
         if (Config.DebugInputHost) Logger.Write("InputHost: Win+V pressed - limit lifted and pages prefetched before the panel opened");
     }
 
@@ -183,6 +304,8 @@ internal sealed partial class Engine
         if (pid == 0 || name.Length == 0 || string.Equals(name, "GameRamCap", StringComparison.OrdinalIgnoreCase)) return;
         string prev = _lastFgEvent;
         _lastFgEvent = name;
+        if (!string.Equals(prev, name, StringComparison.OrdinalIgnoreCase)) RecordUse(name);
+        TrackMru(name);
         if (prev.Length > 0 && !string.Equals(prev, name, StringComparison.OrdinalIgnoreCase) && false && BurstApps.Contains(prev)) TrimBurstLater(prev);   // disabled: trimming right after use caused stutter
         lock (Gate)
         {
@@ -198,13 +321,7 @@ internal sealed partial class Engine
         _prefetchAt[name] = now;
         double free = Native.FreeRamPercent();
         if (free >= 0 && free < Config.PrefetchMinFreePercent) return;   // RAM is really short: do not pull more in
-        long budget = Math.Max(1, Config.PrefetchMaxMB) * 1024L * 1024;
-        foreach (var kv in Native.ProcessMap())
-        {
-            if (budget <= 0) break;
-            if (!string.Equals(kv.Value.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
-            budget -= Native.Prefetch(kv.Key, budget);
-        }
+        WakeApp(name, WakeBudget(name));
     }
 
     void LearnPopupApps(int fgPid, string fg, DateTime now)

@@ -55,13 +55,15 @@ internal sealed partial class Engine
     }
 
     // ---------- memory priority ----------
+    // Background apps always get the lowest Windows memory priority (1), in every mode and level. Not a setting.
+    const uint BackgroundMemoryPriority = 1;
     readonly Dictionary<int, (DateTime Start, uint Orig)> _prio = new();
     readonly HashSet<int> _prioFail = new();
 
     /// <summary>Gives every process of a background app the low memory priority (remembers the original).</summary>
     void LowerPriority(List<Proc> procs)
     {
-        uint want = (uint)Math.Clamp(Config.BackgroundMemoryPriority, 1, 4);
+        uint want = BackgroundMemoryPriority;
         foreach (var x in procs)
         {
             if (_prio.ContainsKey(x.Pid) || _prioFail.Contains(x.Pid)) continue;
@@ -79,7 +81,7 @@ internal sealed partial class Engine
 
     void LowerThreads(List<Proc> procs)
     {
-        uint want = (uint)Math.Clamp(Config.BackgroundMemoryPriority, 1, 4);
+        uint want = BackgroundMemoryPriority;
         foreach (var x in procs)
         {
             bool has = _threadPrio.ContainsKey(x.Pid);

@@ -15,9 +15,9 @@ internal static partial class InfoForms
         noteRow.Controls.Add(Ui.Note("Parent and child processes with their RAM. Grey = protected (never touched by GameRamCap). Read-only."));
         noteRow.Controls.Add(search);
         using var f = Shell("Process tree", new Size(780, 560), tree, out var buttons, noteRow);
-        var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        var refresh = new Button { Text = "Refresh", AutoSize = true };
-        var all = new Button { Text = "Show all", AutoSize = true };
+        var close = new ModernButton { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+        var refresh = new ModernButton { Text = "Refresh", AutoSize = true };
+        var all = new ModernButton { Text = "Show all", AutoSize = true };
         buttons.Controls.Add(close);
         buttons.Controls.Add(refresh);
         buttons.Controls.Add(all);
