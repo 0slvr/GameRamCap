@@ -93,6 +93,7 @@ internal sealed partial class Engine
         double keep = Math.Clamp(pr0.HoldKeepPct > 0 ? pr0.HoldKeepPct : Config.HoldKeepPercent, 0, 100) / 100.0;
 
         // biggest first: the fewest processes have to be touched to reach the target
+        int probes = 0;   // measured need: only a few processes are trimmed per pass (an app with 40 processes was trimmed all at once)
         foreach (var x in fresh.OrderByDescending(x => x.Ws))
         {
             if (projected <= target) break;                       // target reached: leave the rest alone
@@ -100,7 +101,7 @@ internal sealed partial class Engine
             {
                 // Measured need: the process is trimmed once and its working set a few seconds later is what it really uses.
                 // It is capped at that + a margin (done by ProbeNeed itself); no guessed percentages, no learned ratchet.
-                if (!_hot.TryGetValue(x.Pid, out var hot)) { ProbeNeed(x.Pid, t.Exe, x.Ws); continue; }
+                if (!_hot.TryGetValue(x.Pid, out var hot)) { if (probes < MaxProbesPerPass) { ProbeNeed(x.Pid, t.Exe, x.Ws); probes++; } continue; }
                 long needCap = Math.Max(Presets.AbsMinMB * MB, (long)(hot * (Math.Max(1.0, Config.NeedMargin) + WakeBoost(t.Exe))));   // often-used apps get a bigger margin
                 if (Config.NeedMaxMB > 0) needCap = Math.Min(needCap, Config.NeedMaxMB * MB);   // absolute ceiling: a busy process measured right after you left it must not set a 800 MB "need"
                 if (needCap >= x.Ws) continue;                    // it uses nearly all it has: nothing to gain
@@ -116,6 +117,7 @@ internal sealed partial class Engine
         }
     }
 
+    const int MaxProbesPerPass = 6;
     readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> _hot = new();       // pid -> measured working set after a trim
     readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _hotProbing = new();
 
@@ -280,6 +282,16 @@ internal sealed partial class Engine
             }
         }
     }
+    readonly Dictionary<string, DateTime> _closedFocus = new(StringComparer.OrdinalIgnoreCase);   // app -> last time in front while the game gate was closed
+
+    /// <summary>The game gate is closed (nothing is limited, Smart does not run). The ceilings were just lifted, so the "holding" flags
+    /// go too; and what is in front is remembered, so the grace time still protects the apps you use between two games.</summary>
+    void NoteGateClosed(DateTime now)
+    {
+        foreach (var g in _groups.Values) { g.Holding = false; g.CritDone = false; g.Pending = false; }
+        var (_, fg) = ForegroundProc();
+        if (fg.Length > 0) _closedFocus[fg] = now;
+    }
     readonly Dictionary<int, DateTime> _tuneLogAt = new();
     readonly Dictionary<string, DateTime> _statusAt = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<int, DateTime> _softLogAt = new();
@@ -332,14 +344,20 @@ internal sealed partial class Engine
                 if (_failLogged.Contains(pid)) continue;
 
                 long ws = Safe(() => p.WorkingSet64, 0L);
-                var cpu = Safe(() => p.TotalProcessorTime, TimeSpan.Zero);
+                // A failed read (access denied) must stay "unknown": it used to come back as zero CPU time, i.e. "known and idle",
+                // so a busy process could be trimmed as if it were idle.
+                TimeSpan cpu = TimeSpan.Zero; bool cpuOk = true;
+                try { cpu = p.TotalProcessorTime; } catch { cpuOk = false; }
                 double busy = 0; bool known = false;
-                if (_cpuPrev.TryGetValue(pid, out var prev) && cpu >= prev.Cpu)
+                if (cpuOk)
                 {
-                    double secs = (now - prev.At).TotalSeconds;
-                    if (secs > 0.2) { busy = (cpu - prev.Cpu).TotalSeconds / secs; known = true; }
+                    if (_cpuPrev.TryGetValue(pid, out var prev) && cpu >= prev.Cpu)
+                    {
+                        double secs = (now - prev.At).TotalSeconds;
+                        if (secs > 0.2) { busy = (cpu - prev.Cpu).TotalSeconds / secs; known = true; }
+                    }
+                    _cpuPrev[pid] = (cpu, now);
                 }
-                _cpuPrev[pid] = (cpu, now);
 
                 if (!byName.TryGetValue(name, out var list)) byName[name] = list = new List<Proc>();
                 list.Add(new Proc { Pid = pid, Ws = ws, Cpu = busy, Known = known });
@@ -379,6 +397,8 @@ internal sealed partial class Engine
                 g.BaseBudget = b;
                 g.Budget = (long)(b * ratio);
             }
+
+            if (_closedFocus.TryGetValue(name, out var cf) && cf > g.LastFocused) g.LastFocused = cf;   // used since the last game: still in its grace time
 
             // Only the process that owns an active audio stream (the audio service of Discord/Chrome, the player
             // of Spotify) is left alone; the rest of the app is limited as usual.

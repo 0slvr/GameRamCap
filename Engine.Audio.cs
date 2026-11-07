@@ -90,8 +90,9 @@ internal sealed partial class Engine
         }
     }
 
-    // Thread memory priority (optional): pid -> start time of the process whose threads were lowered.
-    readonly Dictionary<int, DateTime> _threadPrio = new();
+    // Thread memory priority (optional): pid -> start time of the process whose threads were lowered, and the original value of every
+    // thread that was changed (a thread the app had already set lower itself is not touched, and each one gets its own value back).
+    readonly Dictionary<int, (DateTime Start, Dictionary<uint, uint> Orig)> _threadPrio = new();
 
     void LowerThreads(List<Proc> procs)
     {
@@ -102,14 +103,15 @@ internal sealed partial class Engine
             if (IsAudioActive(x.Pid)) { if (has) RestoreThreads(x.Pid); continue; }   // audio owner: never touched
             if (has) continue;
             if (Native.GetStartTime(x.Pid) is not DateTime start) continue;
-            if (Native.SetThreadMemoryPriority(x.Pid, want)) _threadPrio[x.Pid] = start;
+            var orig = Native.LowerThreadMemoryPriority(x.Pid, want);
+            if (orig != null) _threadPrio[x.Pid] = (start, orig);
         }
     }
 
     void RestoreThreads(int pid)
     {
-        if (!_threadPrio.Remove(pid, out var start)) return;
-        if (Native.GetStartTime(pid) == start) Native.SetThreadMemoryPriority(pid, 5);   // null = the process is gone
+        if (!_threadPrio.Remove(pid, out var saved)) return;
+        if (Native.GetStartTime(pid) == saved.Start) Native.RestoreThreadMemoryPriority(saved.Orig);   // null = the process is gone
     }
 
     /// <summary>Puts the original memory priority back (only if it is still the same process).</summary>

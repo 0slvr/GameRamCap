@@ -81,8 +81,8 @@ internal sealed partial class Engine
         if (!exemptChanged && (now - _lastScan).TotalSeconds < 1.0) return;
         _lastExemptKey = key;
         _lastScan = now;
-        foreach (var name in _exempt.ToList()) ReleaseByName(name);
-        foreach (var name in _gameNames.ToList()) ReleaseByName(name); // detected games are never capped
+        // Focused apps and detected games are released inside the scan below (by the pids it already has): ReleaseByName per name
+        // meant one full process enumeration per name, every second, under the engine lock.
 
         var alive = new HashSet<int>();
         var all = Safe(() => Process.GetProcesses());
@@ -100,7 +100,14 @@ internal sealed partial class Engine
                 if (_failLogged.Contains(pid)) continue;           // access denied before: do not retry
 
                 string name = p.ProcessName;
-                if (IsProtected(name, pid) || IsException(name) || _exempt.Contains(name) || _gameNames.Contains(name)) continue;
+                if (IsProtected(name, pid) || IsException(name)) continue;
+                if (_exempt.Contains(name) || _gameNames.Contains(name))
+                {
+                    // focused, or a detected game: never capped; lift what it has
+                    if (_limited.TryGetValue(pid, out var xst)) ReleaseAndForget(pid, xst);
+                    if (_prio.ContainsKey(pid) || _threadPrio.ContainsKey(pid)) RestorePriority(new List<int> { pid });
+                    continue;
+                }
 
                 DateTime start = Safe(() => p.StartTime, DateTime.MinValue);
                 var t = ResolveTarget(name);
@@ -115,7 +122,7 @@ internal sealed partial class Engine
 
                 long min = t.MinCeilingMB * MB, max = Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB;
                 long ceiling = Math.Clamp(t.CeilingMB * MB, min, max);
-                if (_learned.TryGetValue(name, out var lc)) ceiling = Math.Clamp(lc, min, max);
+                if (t.Adaptive && _learned.TryGetValue(name, out var lc) && lc.Base == t.CeilingMB) ceiling = Math.Clamp(lc.Ceiling, min, max);
 
                 if (perApp) ceiling = Share(ceiling, counts.GetValueOrDefault(name, 1));
                 long wsNow = Safe(() => p.WorkingSet64, 0L);

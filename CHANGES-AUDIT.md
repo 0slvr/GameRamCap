@@ -85,3 +85,23 @@ Not compiled here (no .NET SDK in the sandbox): run `dotnet build -c Release` on
 - The lists the windows edit (Exceptions, Targets...) are fresh ConfigStore.Load() copies, never the engine's live lists, so no
   copy-on-write was needed.
 - Alt+Tab: Shift+Tab (backwards) still counts as a forward step.
+
+## Engine fixes (follow-up to the engine review)
+Not compiled here (no .NET SDK in the sandbox): run `dotnet build -c Release` once, and test the items marked (test).
+
+- Smart: a process whose CPU time cannot be read is "unknown", no longer "known and idle" (it could be trimmed while busy).
+- Learned ceilings (`_learned`) now remember the Limit MB they came from: they are used only for Adaptive targets and only while the
+  Limit MB is unchanged, so editing a limit in the window takes effect (Hard and Everything modes).
+- IsGaming: only "no such process" means the game ended. An access-denied while asking `HasExited` no longer releases the limits mid-game (test with an anti-cheat game).
+- Everything mode: focused apps and detected games are released inside the one process scan (by pid), not with one full process
+  enumeration per name every second.
+- TryRelease: an unreadable start time at cap time (DateTime.MinValue) is no longer mistaken for a reused PID.
+- Thread memory priority: the original value of every thread is read and kept; only threads above the background level are lowered and
+  each gets its own value back (it was a fixed 5 for all). A thread whose value cannot be read is not touched (test: Native.LowerThreadMemoryPriority).
+- Game gate closed: the "holding" flags of the Smart groups are reset and the app in front is remembered, so the grace time protects
+  apps you used between two games.
+- Measured need (ProbeNeed): at most 6 processes per pass are trimmed for measuring (biggest first), not all processes of an app at once.
+
+### Not done
+- The engine lock (`Gate`) is still held during the Smart scan, Native.Trim and CaptureResident. Moving that work outside the lock
+  means redesigning what the foreground / Alt+Tab handlers may touch; not a safe change without a compiler and tests.

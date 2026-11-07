@@ -522,6 +522,60 @@ internal static partial class Native
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool SetThreadInformation(IntPtr thread, int infoClass, ref MEMORY_PRIORITY_INFORMATION info, uint size);
 
+    const uint THREAD_QUERY_INFORMATION = 0x0040, THREAD_QUERY_LIMITED_INFORMATION = 0x0800;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetThreadInformation(IntPtr thread, int infoClass, ref MEMORY_PRIORITY_INFORMATION info, uint size);
+
+    /// <summary>Lowers the memory priority of the threads of a process to <paramref name="level"/> and returns tid -> original value of the
+    /// threads that really changed (null when none did). A thread whose value cannot be read is left alone (it could not be given back);
+    /// a thread already at or below the level is left alone too.</summary>
+    public static Dictionary<uint, uint>? LowerThreadMemoryPriority(int pid, uint level)
+    {
+        Dictionary<uint, uint>? changed = null;
+        try
+        {
+            uint size = (uint)Marshal.SizeOf<MEMORY_PRIORITY_INFORMATION>();
+            foreach (uint tid in ThreadIds(pid, 1500))
+            {
+                // GetThreadInformation officially asks for THREAD_QUERY_INFORMATION; the limited right is the fallback for threads that refuse it
+                var h = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION, false, tid);
+                if (h == IntPtr.Zero) h = OpenThread(THREAD_SET_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION, false, tid);
+                if (h == IntPtr.Zero) continue;
+                try
+                {
+                    var cur = new MEMORY_PRIORITY_INFORMATION();
+                    if (!GetThreadInformation(h, ThreadMemoryPriority, ref cur, size)) continue;
+                    if (cur.MemoryPriority <= level) continue;
+                    var info = new MEMORY_PRIORITY_INFORMATION { MemoryPriority = level };
+                    if (SetThreadInformation(h, ThreadMemoryPriority, ref info, size))
+                        (changed ??= new Dictionary<uint, uint>())[tid] = cur.MemoryPriority;
+                }
+                finally { CloseHandle(h); }
+            }
+        }
+        catch { }
+        return changed;
+    }
+
+    /// <summary>Gives every thread in the list its own original memory priority back (threads that ended are skipped).</summary>
+    public static void RestoreThreadMemoryPriority(Dictionary<uint, uint> original)
+    {
+        uint size = (uint)Marshal.SizeOf<MEMORY_PRIORITY_INFORMATION>();
+        foreach (var kv in original)
+        {
+            var h = OpenThread(THREAD_SET_INFORMATION, false, kv.Key);
+            if (h == IntPtr.Zero) continue;
+            try
+            {
+                var info = new MEMORY_PRIORITY_INFORMATION { MemoryPriority = kv.Value };
+                SetThreadInformation(h, ThreadMemoryPriority, ref info, size);
+            }
+            catch { }
+            finally { CloseHandle(h); }
+        }
+    }
+
     /// <summary>Sets the memory priority (1 very low ... 5 normal) of every thread of a process. Returns true if at least one thread changed.
     /// The thread list comes from one cached system snapshot, not from a Process object per app.</summary>
     public static bool SetThreadMemoryPriority(int pid, uint level)

@@ -14,7 +14,7 @@ internal sealed partial class Engine
 
     readonly HashSet<string> _exempt = new(StringComparer.OrdinalIgnoreCase);          // names with no limit right now
     readonly Dictionary<string, DateTime> _exemptUntil = new(StringComparer.OrdinalIgnoreCase);
-    readonly Dictionary<string, long> _learned = new(StringComparer.OrdinalIgnoreCase); // adaptive ceilings
+    readonly Dictionary<string, (long Ceiling, int Base)> _learned = new(StringComparer.OrdinalIgnoreCase); // adaptive ceilings (+ the Limit MB they were learned from)
     string _focusName = "";
     // "Popup apps": small apps that take the foreground only briefly, again and again (Win+V, Snipping Tool, a password
     // manager popup). Learned in memory only, never written to disk or the log. They are kept out of trimming.
@@ -115,6 +115,8 @@ internal sealed partial class Engine
         foreach (var k in _popupNames.Where(k => !liveNames.Contains(k) || !_popupAt.TryGetValue(k, out var at) || (now - at).TotalHours >= 2).ToList())
         { _popupNames.Remove(k); _popupAt.Remove(k); }
         foreach (var k in _fsLeftSince.Keys.Where(k => !_gameNames.Contains(k)).ToList()) _fsLeftSince.Remove(k);
+
+        foreach (var k in _closedFocus.Where(kv => (now - kv.Value).TotalMinutes > 10).Select(kv => kv.Key).ToList()) _closedFocus.Remove(k);
 
         try { Suspender.PruneDead(); } catch { }
     }
@@ -480,6 +482,7 @@ internal sealed partial class Engine
             }
             _exempt.Clear(); _exemptUntil.Clear();
             RestoreAll();
+            NoteGateClosed(gnow);
             Status = gaming ? $"Game detected ({GameName}), waiting..." : "Idle - waiting for a game";
             return;
         }

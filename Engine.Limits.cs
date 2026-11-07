@@ -31,7 +31,7 @@ internal sealed partial class Engine
         try { p = Process.GetProcessById(pid); } catch { return true; }   // gone
         using (p)
         {
-            try { if (p.StartTime != st.Start) return true; }              // reused PID: not ours
+            try { if (st.Start != DateTime.MinValue && p.StartTime != st.Start) return true; }   // reused PID: not ours (MinValue = start time was unreadable: cannot tell)
             catch { /* cannot tell: try the release anyway */ }
         }
         return Native.Release(pid, st.OrigMin, st.OrigMax);
@@ -115,8 +115,8 @@ internal sealed partial class Engine
                         continue;
                     }
                     long ceiling = Math.Clamp(t.CeilingMB, t.MinCeilingMB, Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB;
-                    if (_learned.TryGetValue(t.Exe, out var lc))
-                        ceiling = Math.Clamp(lc, t.MinCeilingMB * MB, Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB);
+                    if (t.Adaptive && _learned.TryGetValue(t.Exe, out var lc) && lc.Base == t.CeilingMB)   // not after the user edited the Limit, not when Adaptive is off
+                        ceiling = Math.Clamp(lc.Ceiling, t.MinCeilingMB * MB, Math.Max(t.MinCeilingMB, t.MaxCeilingMB) * MB);
                     if (perApp) ceiling = Share(ceiling, instances.Length);
                     long wsNow = Safe(() => p.WorkingSet64, 0L);
                     if (!Native.SetCeiling(pid, ceiling))

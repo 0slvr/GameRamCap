@@ -20,10 +20,16 @@ internal sealed partial class Engine
             {
                 try
                 {
-                    using var gp = Process.GetProcessById(_gamePid);
-                    if (!gp.HasExited && Safe(() => gp.StartTime, DateTime.MinValue) == _gameStart) return true;
+                    using var gp = Process.GetProcessById(_gamePid);   // throws when there is no such process
+                    bool exited;
+                    try { exited = gp.HasExited; }
+                    catch (System.ComponentModel.Win32Exception) { exited = false; }   // cannot ask (access denied): it was found, so it is still there
+                    var st = Safe(() => gp.StartTime, DateTime.MinValue);
+                    // an unreadable start time is not proof of another process: the PID was found
+                    if (!exited && (st == DateTime.MinValue || _gameStart == DateTime.MinValue || st == _gameStart)) return true;
                 }
-                catch { /* process is gone */ }
+                catch (ArgumentException) { /* process is gone */ }
+                catch (InvalidOperationException) { /* process is gone */ }
                 Logger.Write("Game process exited.");
                 _gamePid = 0;
             }
