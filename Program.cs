@@ -18,22 +18,26 @@ static class Program
         {
             try { using var parent = Process.GetProcessById(parentPid); parent.WaitForExit(); } catch { }
             // If a new main instance already started (restart), it owns the ceilings now: do not lift them.
-            Thread.Sleep(1000);
-            if (Mutex.TryOpenExisting("GameRamCap.SingleInstance", out var live))
+            // A restart brings the new instance within a few seconds (UAC prompt, slow disk): wait for it before lifting anything.
+            for (int i = 0; i < 8; i++)
             {
-                live.Dispose();
-                Logger.Write("Watchdog: a new instance is running, nothing released.");
-                return;
+                Thread.Sleep(1000);
+                if (SingleInstance.IsHeldByAnother())
+                {
+                    Logger.Write("Watchdog: a new instance is running, nothing released.");
+                    return;
+                }
             }
             try { int n = Engine.ReleaseAllHardCeilings(); Logger.Write($"Watchdog: main app ended, released {n} ceiling(s)."); } catch { }
             try { WindowsUpdatePause.RecoverStale(); } catch { }
+            try { PowerPlan.RecoverStale(); } catch { }
             try { int r = Suspender.RecoverStale(); if (r > 0) Logger.Write($"Watchdog: resumed {r} frozen process(es)."); } catch { }
             return;
         }
 
         StartMinimized = args.Any(a => string.Equals(a, Autostart.MinimizedArg, StringComparison.OrdinalIgnoreCase));
-        using var mutex = new Mutex(true, "GameRamCap.SingleInstance", out bool first);
-        if (!first)
+        // One instance only: an exclusive lock inside the protected data folder (a named mutex could be squatted by any program).
+        if (!SingleInstance.TryAcquire())
         {
             // Already running: ask the first instance to show its window instead of exiting silently.
             try { using var ev = EventWaitHandle.OpenExisting(ShowEventName); ev.Set(); } catch { }
@@ -48,6 +52,7 @@ static class Program
 
         try { int n = Suspender.RecoverStale(); if (n > 0) Logger.Write($"Resumed {n} process(es) left frozen by the previous run."); } catch { }
         try { WindowsUpdatePause.RecoverStale(); } catch { }
+        try { PowerPlan.RecoverStale(); } catch { }
         DebugPrivilege.Enable();
         StartWatchdog();
         ApplicationConfiguration.Initialize();
@@ -151,7 +156,9 @@ sealed class TrayContext : ApplicationContext
                     menu.BeginInvoke(() =>
                     {
                         if (t.IsCompletedSuccessfully && t.Result) startup.Checked = want;
-                        else _balloons.Enqueue(("GameRamCap", "Could not change the startup task."));
+                        else _balloons.Enqueue(("GameRamCap", want && Autostart.Blocked
+                            ? "Start with Windows needs a protected copy in Program Files and it could not be made. Run GameRamCap as administrator from a normal folder and try again."
+                            : "Could not change the startup task."));
                     });
                 }
                 catch { }
@@ -183,9 +190,14 @@ sealed class TrayContext : ApplicationContext
         _engine.Notify += (title, text) => _balloons.Enqueue((title, text));
 
         // A second launch signals this event; the UI timer opens the window.
-        var showEv = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEventName);
-        var waiter = new Thread(() => { while (true) { showEv.WaitOne(); _showRequested = true; } }) { IsBackground = true };
-        waiter.Start();
+        // The event only accepts administrators; if another program already took the name, we do not trust it.
+        var showEv = SecureKernel.CreateAdminEvent(Program.ShowEventName);
+        if (showEv == null) Logger.Write("Show-window event unavailable: a second launch will not bring this window to the front.");
+        else
+        {
+            var waiter = new Thread(() => { while (true) { showEv.WaitOne(); _showRequested = true; } }) { IsBackground = true };
+            waiter.Start();
+        }
 
         // React to a window switch immediately (instead of waiting for the next 400 ms tick) and warm the new app up.
         Native.WatchForeground(() => Task.Run(() => { try { _engine.OnForeground(); } catch (Exception ex) { LogOnce("Foreground event", ex); } }));
@@ -195,8 +207,8 @@ sealed class TrayContext : ApplicationContext
         Native.OnStartKey = () => Task.Run(() => { try { _engine.OnStartKeyPressed(); } catch (Exception ex) { LogOnce("Start key", ex); } });
         Native.OnAltTabKey = () => Task.Run(() => { try { _engine.OnAltTabPressed(); } catch (Exception ex) { LogOnce("Alt+Tab key", ex); } });
         Native.OnMouseDown = (x, y) => Task.Run(() => { try { _engine.OnClickAt(x, y); } catch (Exception ex) { LogOnce("Mouse click", ex); } });
-        Native.WatchInputPanelKeys(_engine.Config.DebugInputHost);
-        if (_engine.Config.DebugInputHost) InputHostProbe.Start();
+        if (_engine.Config.GlobalHooks) Native.WatchInputPanelKeys();
+        else Logger.Write("Global keyboard/mouse hooks are off (GlobalHooks=false in config.json); Alt+Tab is still noticed through the switcher window event.");
         Native.WatchWindowActivity(() => Task.Run(() => { try { _engine.OnPanelOpened(); } catch (Exception ex) { LogOnce("Panel event", ex); } }));
         Logger.Write("InputHost: the Win+V host (TextInputHost) is limited like a background app, and free while its panel is open.");
 
@@ -205,8 +217,17 @@ sealed class TrayContext : ApplicationContext
         _timer.Start();
 
         if (!Program.StartMinimized) ShowTargets();   // open the window at a normal start; the startup task starts minimized (tray only)
-        // An older startup task has no --minimized flag: refresh it once (same task, same settings).
-        else Task.Run(() => { try { if (Autostart.IsEnabled()) Autostart.Set(true); } catch { } });
+        // Re-check the startup task at every start: it must point at a program normal programs cannot replace
+        // (older tasks pointed at wherever the exe was). It is repointed to a protected copy, or removed when that is impossible.
+        Task.Run(() =>
+        {
+            try
+            {
+                if (Autostart.IsEnabled() && !Autostart.Set(true) && Autostart.Blocked)
+                    _balloons.Enqueue(("GameRamCap", "Start with Windows was turned off: this copy is in a place other programs can modify. Install it in Program Files."));
+            }
+            catch { }
+        });
     }
 
     static void OpenConfigFile()
@@ -223,7 +244,8 @@ sealed class TrayContext : ApplicationContext
     void SaveCfg()
     {
         try { ConfigStore.Save(_engine.Config); try { _configStamp = File.GetLastWriteTimeUtc(ConfigStore.FilePath); } catch { } } catch { }
-        lock (_engine.Gate) _engine.RestoreAll(); // re-applied with the new mode on the next tick
+        // re-applied with the new mode on the next tick; off the UI thread, because the engine may hold the lock for a moment
+        Task.Run(() => { try { lock (_engine.Gate) _engine.RestoreAll(); } catch (Exception ex) { LogOnce("Restore after save", ex); } });
         RefreshModeChecks();
     }
 
@@ -360,17 +382,43 @@ sealed class TrayContext : ApplicationContext
         _main?.RefreshCustomState();
     }
 
+    volatile bool _reloading, _uiRefreshPending;
+
+    /// <summary>Reads config.json and swaps it in without touching the UI thread (the engine may hold its lock for a moment).</summary>
+    void ReloadConfigInBackground()
+    {
+        if (_reloading) return;
+        _reloading = true;
+        Task.Run(() =>
+        {
+            try
+            {
+                var cfg = ConfigStore.Load();
+                lock (_engine.Gate)
+                {
+                    _engine.RestoreAll();   // targets may have changed: release old limits, they are re-applied next tick
+                    _engine.Config = cfg;
+                }
+                try { _configStamp = File.GetLastWriteTimeUtc(ConfigStore.FilePath); } catch { }
+                _uiRefreshPending = true;   // the UI thread refreshes the menus on its next tick
+            }
+            catch (Exception ex) { LogOnce("Config reload", ex); }
+            finally { _reloading = false; }
+        });
+    }
+
     void OnTick()
     {
         try
         {
+            if (_uiRefreshPending) { _uiRefreshPending = false; RefreshProfileChecks(); RefreshModeChecks(); }
             if (_showRequested) { _showRequested = false; ShowTargets(); }
             while (_balloons.TryDequeue(out var b))
                 try { _tray.ShowBalloonTip(4000, b.Item1, b.Item2, ToolTipIcon.Info); } catch { }
 
             // Hot-reload when the config file is saved.
             var stamp = File.GetLastWriteTimeUtc(ConfigStore.FilePath);
-            if (stamp != _configStamp) LoadConfig();
+            if (stamp != _configStamp && !_reloading) ReloadConfigInBackground();
 
             string text = "GameRamCap: " + _engine.Status;
             _statusItem.Text = _engine.Status;
@@ -391,6 +439,7 @@ sealed class TrayContext : ApplicationContext
 
     void LogOnce(string where, Exception ex)
     {
+        if (ex is InvalidOperationException && ex.Message.Contains("modified", StringComparison.OrdinalIgnoreCase)) return;   // a list was edited in the window mid-scan: the next tick is fine
         string msg = $"{where}: {ex.GetType().Name}: {ex.Message}";
         if (msg == _lastErr && (DateTime.UtcNow - _lastErrAt).TotalSeconds < 60) return;
         _lastErr = msg; _lastErrAt = DateTime.UtcNow;
@@ -402,7 +451,6 @@ sealed class TrayContext : ApplicationContext
         _timer.Stop();
         Native.StopWatchingForeground();
         Native.StopWatchingInputPanelKeys();
-        InputHostProbe.Stop();
         Native.StopWatchingWindowActivity();
         _main?.Shutdown();
         lock (_engine.Gate) _engine.Dispose(); // restores every limited process (waits for a running tick)

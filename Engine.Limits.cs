@@ -63,56 +63,18 @@ internal sealed partial class Engine
     }
 
 
-    /// <summary>Clears hard ceilings a previous crashed run may have left on target apps.</summary>
+    /// <summary>Clears hard ceilings a previous crashed run left behind. Only the ones GameRamCap itself set (see CeilingLedger).</summary>
     public void ClearStaleCeilings()
     {
-        foreach (var t in Config.Targets)
-        {
-            foreach (var p in Safe(() => Process.GetProcessesByName(t.Exe)))
-            {
-                try
-                {
-                    if (Native.TryGetLimits(p.Id, out var min, out var max))
-                        Native.Release(p.Id, min, max);
-                }
-                finally { p.Dispose(); }
-            }
-        }
+        int n = CeilingLedger.ReleaseAll();
+        if (n > 0) Logger.Write($"Lifted {n} ceiling(s) left by the previous run.");
     }
 
-    /// <summary>Lifts every hard working-set cap on every process (used by the watchdog after an End Task,
-    /// and safe to call any time: it only touches processes that really have a hard cap).</summary>
-    public static int ReleaseAllHardCeilings()
-    {
-        int n = 0, self = Environment.ProcessId;
-        foreach (var p in Safe(() => Process.GetProcesses()))
-        {
-            try
-            {
-                if (p.Id <= 4 || p.Id == self) continue;
-                if (Native.HasHardCeiling(p.Id, out var min, out var max) && Native.Release(p.Id, min, max)) n++;
-            }
-            catch { }
-            finally { p.Dispose(); }
-        }
-        return n;
-    }
+    /// <summary>Kept for the callers: the ledger already covers every process, Everything mode included.</summary>
+    public void ClearStaleCeilingsEverything() { }
 
-    /// <summary>Everything mode: also clears leftover hard caps on any non-target process.</summary>
-    public void ClearStaleCeilingsEverything()
-    {
-        if (!Config.LimitEverything) return;
-        foreach (var p in Safe(() => Process.GetProcesses()))
-        {
-            try
-            {
-                if (p.Id <= 4 || Protected.Contains(p.ProcessName)) continue;
-                if (Native.HasHardCeiling(p.Id, out var min, out var max)) Native.Release(p.Id, min, max);
-            }
-            catch { }
-            finally { p.Dispose(); }
-        }
-    }
+    /// <summary>Lifts every ceiling GameRamCap set (used by the watchdog after an End Task). Ceilings set by other programs are left alone.</summary>
+    public static int ReleaseAllHardCeilings() => CeilingLedger.ReleaseAll();
 
     /// <summary>Hard "per app" scope: the app's ceiling is the total, so each of its <paramref name="count"/> processes
     /// gets an equal share (never below 16 MB). Shares are fixed; they are not adapted.</summary>
@@ -136,6 +98,7 @@ internal sealed partial class Engine
                 try
                 {
                     int pid = p.Id;
+                    if (pid == SelfPid) continue;                      // never limit GameRamCap itself
                     DateTime start = Safe(() => p.StartTime, DateTime.MinValue);
                     alive.Add(pid);
 
@@ -179,9 +142,10 @@ internal sealed partial class Engine
             }
         }
 
-        // Forget processes that exited (their limits vanish with them).
+        // Entries whose process is no longer handled here: released (a process that exited counts as released). A live process
+        // is never forgotten while it still carries our ceiling: if the release fails it stays and is retried.
         foreach (var pid in _limited.Keys.Where(k => !alive.Contains(k)).ToList())
-            _limited.Remove(pid);
+            if (_limited.TryGetValue(pid, out var gone)) ReleaseAndForget(pid, gone);
         RestorePriority(_prio.Keys.Union(_threadPrio.Keys).Where(k => !alive.Contains(k)).ToList());
     }
 

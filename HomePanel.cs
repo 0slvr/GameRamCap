@@ -184,7 +184,20 @@ internal sealed class HomePanel : UserControl
             Task.Run(() => Autostart.Set(want)).ContinueWith(t =>
             {
                 bool ok = t.IsCompletedSuccessfully && t.Result;
-                try { BeginInvoke(() => { if (!ok) { _syncing = true; _startup.Checked = !want; _syncing = false; } _startup.Enabled = true; }); } catch { }
+                try
+                {
+                    BeginInvoke(() =>
+                    {
+                        if (!ok) { _syncing = true; _startup.Checked = !want; _syncing = false; }
+                        _startup.Enabled = true;
+                        if (!ok && want)
+                            MessageBox.Show(this, Autostart.Blocked
+                                ? "Start with Windows was not turned on: it needs a copy of GameRamCap in Program Files (a place normal programs cannot change) and that copy could not be made."
+                                : "Windows did not accept the startup task. See the log file for the reason.",
+                                "GameRamCap", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    });
+                }
+                catch { }
             });
         };
         // Read the current state without blocking the window (schtasks can take a moment).

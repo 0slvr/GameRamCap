@@ -11,7 +11,16 @@
     <Version>0.2.6</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
+    <!-- Native.cs struct layouts (MEMORY_BASIC_INFORMATION, hook structs) are the 64-bit ones. -->
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The unit tests have their own project: keep them out of the app. -->
+    <Compile Remove="GameRamCap.Tests\**" />
+    <EmbeddedResource Remove="GameRamCap.Tests\**" />
+    <None Remove="GameRamCap.Tests\**" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Also embedded as a managed resource so the tray icon and every window can load it at run time (see AppIcon.cs). -->

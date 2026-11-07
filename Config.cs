@@ -143,8 +143,6 @@ internal sealed class Config
     public bool WakeClickOnMouse { get; set; } = true;
     /// <summary>Win+V / emoji host (TextInputHost) grows over time. When it is idle (not in front for 10 s) and bigger than
     /// this many MB, it is closed; Windows starts a fresh small one the next time you need it. 0 = never.</summary>
-    /// <summary>Temporary diagnostics: logs the windows of the Win+V host (TextInputHost) whenever they change.</summary>
-    public bool DebugInputHost { get; set; } = false;
     /// <summary>Diagnostics: writes a log line whenever a background process gets a ceiling, when that ceiling is raised or lowered, and when an
     /// audio-playing process is freed from its ceiling. Turn off once you have the answer you need.</summary>
     public bool LogHolds { get; set; } = false;
@@ -187,6 +185,10 @@ internal sealed class Config
     public List<ProcessRule> Rules { get; set; } = new();
     /// <summary>While a game runs and FREE RAM is low, clear the Windows standby list (at most once per interval).</summary>
     public bool StandbyClean { get; set; } = false;
+    /// <summary>Global keyboard + mouse hooks (on their own thread) that wake an app a few milliseconds BEFORE you use it (Win key, Win+V, clicks).
+    /// Off by default: some anti-cheats and antivirus tools dislike global hooks, and the wake-up on focus change / Alt+Tab switcher still works
+    /// without them. Needs a restart.</summary>
+    public bool GlobalHooks { get; set; } = false;
     /// <summary>Standby cleaner: act only when free RAM (free + zeroed pages, not the standby cache) is below this many MB...</summary>
     public int StandbyFreeBelowMB { get; set; } = 1024;
     /// <summary>...and the standby list holds at least this many MB.</summary>
@@ -206,21 +208,122 @@ internal static class ConfigStore
         AllowTrailingCommas = true,
     };
 
-    public static string Dir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GameRamCap");
+    /// <summary>%ProgramData%\GameRamCap: only SYSTEM and Administrators can write there (see SecureStore).
+    /// It used to be %APPDATA%, where any program of the user could edit the files this admin app trusts.</summary>
+    public static string Dir => SecureStore.Dir;
     public static string FilePath => Path.Combine(Dir, "config.json");
 
     public static void Save(Config cfg)
     {
-        Directory.CreateDirectory(Dir);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(cfg, Options));
+        SecureStore.WriteAllText(FilePath, JsonSerializer.Serialize(cfg, Options));
         try { File.Copy(FilePath, LastGoodPath, true); } catch { }   // last known-good copy
     }
 
     static string LastGoodPath => Path.Combine(Dir, "config.lastgood.json");
 
     /// <summary>Focus mode is always on; it is no longer a user option.</summary>
-    static Config Force(Config c) { c.FocusMode = true; c.AutoDetectFullscreen = true; c.InputHostRecycleMB = 0; c.DebugInputHost = false; return c; }   // the Win+V probe floods the UI thread with window events: never on   // closing TextInputHost is retired: it is limited like any background app instead
+    static Config Force(Config c) { c.FocusMode = true; c.AutoDetectFullscreen = true; c.InputHostRecycleMB = 0; return c; }   // closing TextInputHost is retired: it is limited like any background app instead
+
+    // ---------------------------------------------------------------- validation: never trust the file blindly
+
+    static string? CleanName(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        s = s.Trim();
+        if (s.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) s = s[..^4];
+        if (s.Length == 0 || s.Length > 128) return null;
+        foreach (char ch in s) if (char.IsControl(ch) || "\\/:*?\"<>|".IndexOf(ch) >= 0) return null;   // a process name, never a path
+        return s;
+    }
+
+    static List<string> CleanList(List<string>? list) =>
+        (list ?? new List<string>()).Select(CleanName).Where(n => n != null).Select(n => n!)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Take(500).ToList();
+
+    static int Clamp(int v, int lo, int hi) => Math.Min(hi, Math.Max(lo, v));
+    static double Clamp(double v, double lo, double hi) => double.IsNaN(v) ? lo : Math.Min(hi, Math.Max(lo, v));
+
+    /// <summary>Names must be plain process names and numbers must be in sane ranges (generous: real settings are untouched).</summary>
+    static Config Sanitize(Config c)
+    {
+        c.PresetOverrides ??= new();
+        c.CustomLevel ??= new();
+        c.Targets = (c.Targets ?? new List<Target>()).Where(t => t != null).Select(t =>
+        {
+            t.Exe = CleanName(t.Exe) ?? "";
+            t.CeilingMB = Clamp(t.CeilingMB, 2, 1_000_000);
+            t.MinCeilingMB = Clamp(t.MinCeilingMB, 2, 1_000_000);
+            t.MaxCeilingMB = Clamp(t.MaxCeilingMB, 2, 1_000_000);
+            t.BudgetMB = Clamp(t.BudgetMB, 0, 1_000_000);
+            t.FocusAlso = CleanList(t.FocusAlso);
+            return t;
+        }).Where(t => t.Exe.Length > 0).Take(500).ToList();
+        c.Games = CleanList(c.Games);
+        c.Exceptions = CleanList(c.Exceptions);
+        c.FullscreenIgnore = CleanList(c.FullscreenIgnore);
+        c.UnprotectedBuiltIn = CleanList(c.UnprotectedBuiltIn);
+        c.Rules = (c.Rules ?? new List<ProcessRule>()).Where(r => r != null).Select(r =>
+        {
+            r.Exe = CleanName(r.Exe) ?? "";
+            if (!ProcessRules.PriorityNames.Contains(r.Priority ?? "", StringComparer.OrdinalIgnoreCase)) r.Priority = "";
+            if (r.AffinityMask < 0) r.AffinityMask = 0;
+            return r;
+        }).Where(r => r.Exe.Length > 0).Take(500).ToList();
+
+        if (!c.IsSmart() && !string.Equals(c.Mode, "Hard", StringComparison.OrdinalIgnoreCase)) c.Mode = "Smart";
+        if (!string.Equals(c.HardScope, "App", StringComparison.OrdinalIgnoreCase)) c.HardScope = "Process";
+        if (!Presets.Names.Contains(c.Profile ?? "", StringComparer.OrdinalIgnoreCase) && !Presets.IsCustomLevel(c)) c.Profile = "Balanced";
+
+        c.PressureFreePercent = Clamp(c.PressureFreePercent, 1, 90);
+        c.CriticalFreePercent = Clamp(c.CriticalFreePercent, 1, 90);
+        c.SmartScanSeconds = Clamp(c.SmartScanSeconds, 0.5, 60);
+        c.TrimCooldownSeconds = Clamp(c.TrimCooldownSeconds, 1, 3600);
+        c.GraceAfterFocusSeconds = Clamp(c.GraceAfterFocusSeconds, 0, 300);
+        c.HoldMinProcessMB = Clamp(c.HoldMinProcessMB, 0, 4096);
+        c.HoldKeepPercent = Clamp(c.HoldKeepPercent, 0, 100);
+        c.AudioProtectGraceSeconds = Clamp(c.AudioProtectGraceSeconds, 0, 300);
+        c.AudioCapMB = Clamp(c.AudioCapMB, 0, 100_000);
+        c.NeedMaxMB = Clamp(c.NeedMaxMB, 0, 100_000);
+        c.NeedMargin = Clamp(c.NeedMargin, 1, 10);
+        c.NeedProbeSeconds = Clamp(c.NeedProbeSeconds, 0.5, 120);
+        c.WakeBoostPerUse = Clamp(c.WakeBoostPerUse, 0, 5);
+        c.RelimitDelaySeconds = Clamp(c.RelimitDelaySeconds, 0, 60);
+        c.DefaultCeilingMB = Clamp(c.DefaultCeilingMB, 2, 1_000_000);
+        c.DefaultMinCeilingMB = Clamp(c.DefaultMinCeilingMB, 2, 1_000_000);
+        c.DefaultMaxCeilingMB = Clamp(c.DefaultMaxCeilingMB, 2, 1_000_000);
+        c.PrefetchMaxMB = Clamp(c.PrefetchMaxMB, 0, 4096);
+        c.PrefetchFrequentBoost = Clamp(c.PrefetchFrequentBoost, 0, 10);
+        c.PrefetchMinFreePercent = Clamp(c.PrefetchMinFreePercent, 0, 100);
+        c.BigProcMB = Clamp(c.BigProcMB, 0, 1_000_000);
+        c.BigProcKeepPercent = Clamp(c.BigProcKeepPercent, 0, 100);
+        c.BigProcMaxGrowPercent = Clamp(c.BigProcMaxGrowPercent, 0, 10_000);
+        c.HardFaultPagesPerSec = Clamp(c.HardFaultPagesPerSec, 0, 1_000_000);
+        c.ThrashFaultsPerMB = Clamp(c.ThrashFaultsPerMB, 0, 1_000_000);
+        c.InputHostIdleSeconds = Clamp(c.InputHostIdleSeconds, 0, 86400);
+        c.RecentActivitySeconds = Clamp(c.RecentActivitySeconds, 0, 300);
+        c.DelaySeconds = Clamp(c.DelaySeconds, 0, 600);
+        c.StandbyFreeBelowMB = Clamp(c.StandbyFreeBelowMB, 0, 1_000_000);
+        c.StandbyMinMB = Clamp(c.StandbyMinMB, 0, 1_000_000);
+        c.StandbyMinIntervalSeconds = Clamp(c.StandbyMinIntervalSeconds, 10, 86400);
+        if (c.CriticalFreePercent > c.PressureFreePercent) c.CriticalFreePercent = c.PressureFreePercent;   // "critical" can never be above "pressure"
+        foreach (var o in c.PresetOverrides.Values.Where(o => o != null)) ClampOverride(o);
+        ClampOverride(c.CustomLevel);
+        return c;
+    }
+
+    static void ClampOverride(PresetOverride? o)
+    {
+        if (o == null) return;
+        if (o.Scan is double scan) o.Scan = Clamp(scan, 0.5, 60);
+        if (o.HoldMB is int hold) o.HoldMB = Clamp(hold, 2, 100_000);
+        if (o.Cooldown is double cool) o.Cooldown = Clamp(cool, 0, 3600);
+        if (o.Grace is double grace) o.Grace = Clamp(grace, 0, 300);
+        if (o.BudgetScale is double scale) o.BudgetScale = Clamp(scale, 0.1, 10);
+        if (o.MinProcMB is int minp) o.MinProcMB = Clamp(minp, 1, 100_000);
+        if (o.CritFactor is double crit) o.CritFactor = Clamp(crit, 0.1, 1);
+        if (o.FloorMB is int floor) o.FloorMB = Clamp(floor, 2, 100_000);
+        if (o.KeepPct is int keep) o.KeepPct = Clamp(keep, 1, 100);
+    }
 
     public static Config Load()
     {
@@ -228,12 +331,11 @@ internal static class ConfigStore
         {
             if (!File.Exists(FilePath))
             {
-                Directory.CreateDirectory(Dir);
                 var def = new Config();
-                File.WriteAllText(FilePath, JsonSerializer.Serialize(def, Options));
+                SecureStore.WriteAllText(FilePath, JsonSerializer.Serialize(def, Options));
                 return def;
             }
-            return Force(JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), Options) ?? new Config());
+            return Force(Sanitize(JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), Options) ?? new Config()));
         }
         catch (Exception ex)
         {
@@ -254,7 +356,7 @@ internal static class ConfigStore
                     {
                         Logger.Write("Using the last known-good config.");
                         File.Copy(LastGoodPath, FilePath, true);   // repair, so the next hot-reload sees a valid file
-                        return Force(good);
+                        return Force(Sanitize(good));
                     }
                 }
             }

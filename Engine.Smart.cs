@@ -2,7 +2,9 @@ using System.Diagnostics;
 
 namespace GameRamCap;
 
-// Smart mode. No hard caps at all, so an app can never be starved or crash because of us:
+// Smart mode. Gentle by design, and it only touches background apps (never the one in focus, never a protected one):
+//  * A hard working-set ceiling (SetProcessWorkingSetSizeEx) is put on a background process once RAM is under pressure, at the size it
+//    really needs (measured), and lifted as soon as the app gets focus or RAM recovers. Every ceiling is written to CeilingLedger so a crash cannot leave one behind.
 //  * Nothing happens while Windows has enough free RAM.
 //  * Under pressure, background apps are soft-trimmed (EmptyWorkingSet): pages go to the standby list and
 //    the app takes back what it really needs instantly, without disk access.
@@ -51,8 +53,9 @@ internal sealed partial class Engine
     void HoldProcess(int pid, long ceiling, long ws = 0, long floor = 0, bool pinFloor = false)
     {
         if (_limited.ContainsKey(pid) || _failLogged.Contains(pid)) return;
-        DateTime start; string pname = "?";
-        try { using var p = Process.GetProcessById(pid); start = p.StartTime; pname = p.ProcessName; } catch { return; }
+        if (Native.GetStartTime(pid) is not DateTime start) return;
+        string pname = "?";
+        if (Config.LogHolds) { try { using var np = Process.GetProcessById(pid); pname = np.ProcessName; } catch { } }   // the name is only for the log line
         if (!Native.TryGetLimits(pid, out var omin, out var omax)) { _failLogged.Add(pid); return; }
         CaptureResident(pid, ws);   // remember what the process was using before it is squeezed
         if (!Native.SetCeiling(pid, ceiling)) { _failLogged.Add(pid); return; }
@@ -122,6 +125,9 @@ internal sealed partial class Engine
     void ProbeNeed(int pid, string name, long ws0)
     {
         if (!_hotProbing.TryAdd(pid, 0)) return;
+        var startAt = Native.GetStartTime(pid);
+        if (startAt == null) { _hotProbing.TryRemove(pid, out _); return; }
+        var cfgAtStart = Config;
         CaptureResident(pid, ws0);
         if (!Native.Trim(pid)) { _hotProbing.TryRemove(pid, out _); _failLogged.Add(pid); return; }
         Task.Run(async () =>
@@ -135,7 +141,9 @@ internal sealed partial class Engine
                 if (Config.NeedMaxMB > 0) cap = Math.Min(cap, Config.NeedMaxMB * MB);
                 lock (Gate)
                 {
-                    if (!Enabled || !Config.Enabled || _exempt.Contains(name) || _limited.ContainsKey(pid) || IsAudioActive(pid)) return;
+                    if (_disposed || !Enabled || !Config.Enabled || !ReferenceEquals(cfgAtStart, Config)) return;   // closing, paused or settings changed meanwhile
+                    if (Native.GetStartTime(pid) != startAt) return;                                                  // the PID now belongs to another process
+                    if (_exempt.Contains(name) || _limited.ContainsKey(pid) || IsAudioActive(pid)) return;
                     if (cap >= ws0) return;
                     HoldProcess(pid, cap, ws0, cap, true);
                     var g = _groups.TryGetValue(name, out var gg) ? gg : null;
@@ -312,9 +320,9 @@ internal sealed partial class Engine
             try
             {
                 int pid = p.Id;
-                if (pid <= 4) continue;
+                if (pid <= 4 || pid == SelfPid) continue;             // GameRamCap never limits itself
                 string name = p.ProcessName;
-                if (Protected.Contains(name) || IsException(name)) continue;
+                if (IsProtected(name, pid) || IsException(name)) continue;
                 if (Config.Games.Contains(name, StringComparer.OrdinalIgnoreCase)) continue; // never trim your games
                 if (_gameNames.Contains(name)) continue;                                      // nor detected fullscreen games
                 if (!Config.LimitEverything &&
@@ -342,6 +350,8 @@ internal sealed partial class Engine
         foreach (var pid in _hot.Keys.Where(k => !seen.Contains(k)).ToList()) _hot.TryRemove(pid, out _);
         foreach (var pid in _resident.Keys.Where(k => !seen.Contains(k)).ToList()) _resident.TryRemove(pid, out _);
         foreach (var pid in _wokenAt.Keys.Where(k => !seen.Contains(k)).ToList()) _wokenAt.TryRemove(pid, out _);
+        foreach (var pid in _tuneLogAt.Keys.Where(k => !seen.Contains(k)).ToList()) _tuneLogAt.Remove(pid);
+        foreach (var pid in _softLogAt.Keys.Where(k => !seen.Contains(k)).ToList()) _softLogAt.Remove(pid);
         // Memory priority: give it back to processes that left the list (exited, or now excluded as a game).
         RestorePriority(_prio.Keys.Union(_threadPrio.Keys).Where(k => !seen.Contains(k)).ToList());
         _prioFail.RemoveWhere(k => !seen.Contains(k));
@@ -358,7 +368,7 @@ internal sealed partial class Engine
             // Custom: the app's own budget. Three levels: the level's ceiling x the app's process count.
             // Recomputed every scan so it follows the process count (e.g. Chrome opening/closing tabs).
             long b = UsesLevelOnly && !t.UseOwnLimit
-                ? (long)(Math.Max(64, pr.HoldMB * allProcs.Count) * MB * pr.BudgetScale)
+                ? (long)(Math.Max(64L, (long)pr.HoldMB * allProcs.Count) * MB * pr.BudgetScale)
                 : (long)((t.BudgetMB > 0 ? t.BudgetMB : Math.Max(t.MinCeilingMB, t.MaxCeilingMB)) * MB * pr.BudgetScale);
             if (!_groups.TryGetValue(name, out var g))
                 g = _groups[name] = new Group { Budget = b, BaseBudget = b };
@@ -386,6 +396,11 @@ internal sealed partial class Engine
                         {
                             // Playing: not squeezed to its need, but not left free either (Spotify's player grows to 800 MB+ when unlimited).
                             if (x.Ws > audioCap) HoldProcess(x.Pid, audioCap, x.Ws, audioCap, true);
+                            else if (_limited.TryGetValue(x.Pid, out var ast) && !ast.Releasing && ast.Ceiling < audioCap && Native.SetCeiling(x.Pid, audioCap))
+                            {
+                                // It was squeezed while idle and started playing: give it room now (TuneHeld skips audio processes).
+                                ast.Ceiling = audioCap; ast.Floor = audioCap; ast.FloorUntil = DateTime.MaxValue;
+                            }
                         }
                         else ReleasePid(x.Pid);
                     }
@@ -412,7 +427,8 @@ internal sealed partial class Engine
             {
                 g.LastFocused = now; g.Pending = false;
                 if (_prio.Count > 0 || _threadPrio.Count > 0) RestorePriority(procs.Select(x => x.Pid).Where(q => _prio.ContainsKey(q) || _threadPrio.ContainsKey(q)).ToList());
-                if (g.Holding || _limited.Count > 0) { g.Holding = false; g.CritDone = false; ReleaseByName(name); }   // focused: ceiling off at once
+                // focused: ceiling off at once (the pids are already known: no process enumeration per exempt name)
+                if (g.Holding || allProcs.Any(x => _limited.ContainsKey(x.Pid))) { g.Holding = false; g.CritDone = false; ReleasePids(allProcs.Select(x => x.Pid)); }
                 continue;
             }
 

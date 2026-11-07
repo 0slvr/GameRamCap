@@ -7,6 +7,7 @@ namespace GameRamCap;
 internal static class ProcessTools
 {
     const uint PROCESS_SET_INFORMATION = 0x0200;
+    static readonly Dictionary<int, (long start, ProcessPriorityClass cls)> OrigPriority = new();   // pid -> priority before Efficiency mode
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
@@ -45,7 +46,22 @@ internal static class ProcessTools
                     StateMask = on ? PROCESS_POWER_THROTTLING_EXECUTION_SPEED : 0,
                 };
                 bool good = SetProcessInformation(h, ProcessPowerThrottling, ref st, (uint)Marshal.SizeOf<PROCESS_POWER_THROTTLING_STATE>());
-                try { p.PriorityClass = on ? ProcessPriorityClass.Idle : ProcessPriorityClass.Normal; } catch { }
+                try
+                {
+                    if (on)
+                    {
+                        lock (OrigPriority) if (!OrigPriority.ContainsKey(p.Id)) OrigPriority[p.Id] = (p.StartTime.Ticks, p.PriorityClass);
+                        p.PriorityClass = ProcessPriorityClass.Idle;
+                    }
+                    else
+                    {
+                        var restore = ProcessPriorityClass.Normal;   // no record (turned on by Task Manager?): Normal
+                        lock (OrigPriority)
+                            if (OrigPriority.Remove(p.Id, out var o) && o.start == p.StartTime.Ticks) restore = o.cls;
+                        p.PriorityClass = restore;
+                    }
+                }
+                catch { }
                 if (good) ok++; else failed++;
             }
             catch { failed++; }

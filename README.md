@@ -206,9 +206,9 @@ Any game that runs fullscreen or borderless is detected automatically. For other
 |---|---|---|
 | `WakeBoostPerUse` | 0.1 | Apps you bring to the front often are spared more (up to double). 0 = off. |
 | `PrefetchApps` | on | Saves each process's resident pages before the first trim and reads exactly those back when you return (within `PrefetchMaxMB`). |
-| `WakeStartOnKey` | on | `Win`, `Win+S`, `Win+Q` pre-wake the Start and Search hosts. |
-| `WakeAltTabOnKey` | on | `Alt+Tab` pre-wakes the app you're switching to. |
-| `WakeClickOnMouse` | on | Clicking a window of another app wakes it before it comes to the front. |
+| `WakeStartOnKey` | on | `Win`, `Win+S`, `Win+Q` pre-wake the Start and Search hosts. Needs `GlobalHooks` = true. |
+| `WakeAltTabOnKey` | on | `Alt+Tab` pre-wakes the app you're switching to (works without `GlobalHooks`, through the switcher window event). |
+| `WakeClickOnMouse` | on | Clicking a window of another app wakes it before it comes to the front. Needs `GlobalHooks` = true. |
 
 All wake-ups are skipped while free RAM is below `PrefetchMinFreePercent`.
 </details>

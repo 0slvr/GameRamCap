@@ -55,8 +55,7 @@ internal static class UiPrefs
     {
         try
         {
-            Directory.CreateDirectory(ConfigStore.Dir);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(Current, new JsonSerializerOptions { WriteIndented = true }));
+            SecureStore.WriteAllText(FilePath, JsonSerializer.Serialize(Current, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }

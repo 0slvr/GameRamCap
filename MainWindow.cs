@@ -32,6 +32,8 @@ internal sealed class MainWindow : Form
         _settingsPage = settings.Pages[0];   // one scrolling page of cards
         _tabs.TabPages.AddRange(new[] { _homePage, _appsPage, _settingsPage });
         _tabs.PinLast = true;   // Settings sits apart, at the right end of the top bar
+        // leaving the Apps tab with unsaved edits in the limits table asks first
+        _tabs.CanLeave = (from, to) => _exiting || from != _appsPage || to == _appsPage || _targets.ConfirmLeave();
         Controls.Add(_tabs);
         Ui.Polish(this);
         _tabs.SelectedIndexChanged += (_, _) => RefreshCustomState();

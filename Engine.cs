@@ -7,6 +7,10 @@ namespace GameRamCap;
 internal sealed partial class Engine : IDisposable
 {
     const long MB = 1024 * 1024;
+    static readonly int SelfPid = Environment.ProcessId;   // GameRamCap never limits itself
+    volatile bool _disposed;
+    bool? _gamingTick;                                    // IsGaming() once per tick (it has side effects and is read twice)
+    bool IsGamingOnce() => _gamingTick ??= IsGaming();
 
     // Never touched, even if listed as a target.
     internal static readonly HashSet<string> ProtectedFull = new(StringComparer.OrdinalIgnoreCase)
@@ -24,11 +28,10 @@ internal sealed partial class Engine : IDisposable
         "explorer", "obs64", "obs32", "Streamlabs OBS", "NVIDIA Share", "nvsphelper64", "ShellHost", "SearchIndexer",
     };
 
-    // Shell helpers that may now be trimmed (they grow over time). They are still ignored for game detection
-    // and for the focus-tree walk (see ProtectedFull), so the Start menu / search never counts as a game.
-    internal static readonly string[] Relaxed = { "explorer", "TextInputHost" };   // TextInputHost (Win+V) is handled like a normal app: "in focus" while the panel is open (see InputPanelOpen); Start and Search stay protected
+    // ProtectedFull is also what game detection and the focus-tree walk ignore (see TreeNames), so the Start menu /
+    // search / Explorer never count as a game and never drag their child processes into "in focus".
+    // TextInputHost (Win+V) is handled like a normal app: "in focus" while the panel is open (see InputPanelOpen).
 
-    /// <summary>What the engine refuses to trim: ProtectedFull minus the Relaxed shell helpers.</summary>
     /// <summary>Protected by default: the Windows processes that crash or log you out if they are ended or starved
     /// (blue screen, black screen, lost session). Everything else is unprotected unless the user protects it
     /// (right-click > Protect, or the Exceptions list). The user can unprotect these too (right-click > Unprotect).
@@ -42,11 +45,20 @@ internal sealed partial class Engine : IDisposable
         "EasyAntiCheat", "EasyAntiCheat_EOS", "EasyAntiCheat_launcher", "BEService", "BEService_x64",
         "vgc", "vgtray", "FACEITService", "FACEIT", "GameGuard", "GameMon", "GameMon64", "xhunter1",
         "PnkBstrA", "PnkBstrB",
+        // Audio engine, security, GPU driver services and virtual machines: starving them gives crackling sound, a broken overlay
+        // or a frozen VM. (Right-click > Unprotect still lets the user limit any of them.)
+        "audiodg", "RtkAudUService64", "MsMpEng", "NisSrv", "MpDefenderCoreService", "SecurityHealthService", "SgrmBroker",
+        "sihost", "ctfmon", "WUDFHost", "LogonUI", "LockApp",
+        "nvcontainer", "NVDisplay.Container", "RadeonSoftware", "AMDRSServ",
+        "vmmem", "vmwp", "vmware-vmx", "VirtualBoxVM", "VBoxHeadless", "qemu-system-x86_64",
     };
 
     /// <summary>What is protected right now: built-in list + the user's own protected apps (Config.Exceptions) - the ones the user unprotected.
     /// Replaced as a whole (never edited in place) so the engine thread can read it while the UI changes it.</summary>
     internal static volatile HashSet<string> Protected = new(BaseProtected, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Protected by name, but a process that only borrows a core Windows name (and does not run from the Windows folder) is not.</summary>
+    internal static bool IsProtected(string name, int pid) => Protected.Contains(name) && !ProcessIdentity.IsImpostor(name, pid);
 
     internal static void RebuildProtected(Config c)
     {
@@ -81,11 +93,14 @@ internal sealed partial class Engine : IDisposable
         lock (Gate)
         {
             _pCache = null;
+            _gamingTick = null;
             TickFocus();
             TickStandby();
-            try { UsageMonitor.Update(Config); } catch (Exception ex) { Logger.Write("Usage monitor: " + ex.Message); }
-            if (Enabled && Config.Enabled) ProcessRules.Apply(Config);   // saved priority / CPU-core rules (throttled inside)
         }
+        // These two do not touch engine state and can take a while (they open every process): outside the lock, so the
+        // foreground / Alt+Tab / click handlers are never held up behind them.
+        try { UsageMonitor.Update(Config); } catch (Exception ex) { Logger.Write("Usage monitor: " + ex.Message); }
+        if (Enabled && Config.Enabled) ProcessRules.Apply(Config);   // saved priority / CPU-core rules (throttled inside)
     }
 
     /// <summary>Tick runs on a background thread; anything on the UI thread that touches engine state
@@ -95,5 +110,5 @@ internal sealed partial class Engine : IDisposable
     static T[] Safe<T>(Func<T[]> f) { try { return f(); } catch { return Array.Empty<T>(); } }
     static T Safe<T>(Func<T> f, T fallback) { try { return f(); } catch { return fallback; } }
 
-    public void Dispose() { RestoreAll(); Suspender.ResumeAll(); StandbyCleaner.Close(); }
+    public void Dispose() { _disposed = true; RestoreAll(); Suspender.ResumeAll(); StandbyCleaner.Close(); }
 }

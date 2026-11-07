@@ -21,11 +21,12 @@ internal sealed partial class Engine
     string _fgPrev = ""; int _fgPrevPid; DateTime _fgPrevSince = DateTime.MinValue;
     readonly Dictionary<string, int> _briefCount = new(StringComparer.OrdinalIgnoreCase);
     readonly HashSet<string> _popupNames = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, DateTime> _popupAt = new(StringComparer.OrdinalIgnoreCase);   // when each popup app was learned (they expire, see CleanCaches)
+    readonly Dictionary<string, DateTime> _fsLeftSince = new(StringComparer.OrdinalIgnoreCase);
+    readonly object _evLock = new();   // tiny critical sections of the event handlers (never held while calling anything else)
 
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _prefetchAt = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Called by Windows' foreground-change event (any thread). Lifts the limit of the new foreground app right away,
-    /// then reads its trimmed pages back into RAM. The regular tick still does the full bookkeeping a moment later.</summary>
     /// <summary>Shell helpers you summon for a moment (Win+V / emoji panel, Start menu, search). They get a quick
     /// "wake up" when they appear and are trimmed again right after you leave them, instead of waiting for the normal grace time.</summary>
     internal static readonly HashSet<string> BurstApps = new(StringComparer.OrdinalIgnoreCase)
@@ -54,74 +55,6 @@ internal sealed partial class Engine
         lock (q) { while (q.Count > 0 && (now - q.Peek()).TotalMinutes > 30) q.Dequeue(); n = q.Count; }
         return Math.Min(1.0, n * Config.WakeBoostPerUse);
     }
-    string _dbgSig = "";
-
-    /// <summary>Diagnostics for Win+V: logs TextInputHost's windows (and which window is in front) only when they change.</summary>
-    long _dbgKeyTicks;
-    void DebugInputHost()
-    {
-        if (!Config.DebugInputHost) return;
-        try
-        {
-            long k = Native.LastInputPanelKeyTicks;
-            if (k != _dbgKeyTicks) { _dbgKeyTicks = k; Logger.Write("InputHost: Win+V/emoji/voice hotkey pressed"); }
-
-            var parts = new List<string>();
-            long wsMb = 0;
-            foreach (var p in Process.GetProcessesByName("TextInputHost"))
-            {
-                try { parts.Add($"pid{p.Id} " + string.Join("", Native.DescribeWindows(p.Id))); wsMb = p.WorkingSet64 / MB; }
-                finally { p.Dispose(); }
-            }
-            var fgw = Native.GetForegroundWindow();
-            Native.GetWindowThreadProcessId(fgw, out uint fpid);
-            string fgName = "";
-            try { using var fp = Process.GetProcessById((int)fpid); fgName = fp.ProcessName; } catch { }
-            string sig = string.Join(" || ", parts) + $"  FOREGROUND={fgName}";   // ws is not part of it: it changes all the time
-            if (sig == _dbgSig) return;
-            _dbgSig = sig;
-            Logger.Write("InputHost windows: " + (parts.Count == 0 ? "(TextInputHost not running)" : "") + sig + $"  ws={wsMb}MB");
-        }
-        catch { }
-    }
-    DateTime _inputHostSeen = DateTime.UtcNow, _recycleCheck = DateTime.MinValue;
-
-    /// <summary>Closes an idle, bloated TextInputHost (never while it shows a window, and only after 30 s without it in front). Windows relaunches it on demand, small again.</summary>
-    void RecycleInputHost(string fg, DateTime now)
-    {
-        if (string.Equals(fg, "TextInputHost", StringComparison.OrdinalIgnoreCase)) { _inputHostSeen = now; return; }
-        int limit = Config.InputHostRecycleMB;
-        // The windows of TextInputHost look the same open or closed and it never becomes the foreground app (see the
-        // diagnostics log), so the two checks below cannot tell. The hotkey press is the signal: stay away from it
-        // for InputHostIdleSeconds after the last Win+V / emoji / voice-typing press.
-        long k = Native.LastInputPanelKeyTicks;
-        if (k != 0) { var kd = new DateTime(k, DateTimeKind.Utc); if (kd > _inputHostSeen) _inputHostSeen = kd; }
-        if (limit <= 0 || (now - _recycleCheck).TotalSeconds < 15) return;
-        if ((now - _inputHostSeen).TotalSeconds < Math.Max(30, Config.InputHostIdleSeconds))
-        {
-            RecycleWhy($"the app started, or Win+V was pressed, less than {Math.Max(30, Config.InputHostIdleSeconds)} s ago");
-            return;
-        }
-        _recycleCheck = now;
-        foreach (var p in Process.GetProcessesByName("TextInputHost"))
-        {
-            try
-            {
-                long ws = p.WorkingSet64;
-                if (ws < limit * 1024L * 1024) { RecycleWhy($"TextInputHost is under the {limit} MB limit"); continue; }
-                // Fallback that does not depend on any window class name (a Windows update may rename them): any window activity of the host.
-                long la = Native.LastActivityTicks(p.Id);
-                if (la != 0 && (now - new DateTime(la, DateTimeKind.Utc)).TotalSeconds < Math.Max(30, Config.InputHostIdleSeconds)) { RecycleWhy($"it showed window activity less than {Math.Max(30, Config.InputHostIdleSeconds)} s ago"); return; }
-                if (Native.IsInputPanelOpen(p) || Native.HasVisibleWindow(p.Id)) { RecycleWhy("the Win+V panel is open"); _inputHostSeen = now; return; }   // Win+V / emoji / keyboard is open right now
-                p.Kill();
-                Logger.Write($"Recycled TextInputHost (Win+V host): it was {ws / MB} MB and idle. Windows starts a fresh one when needed.");
-                _recycleWhy = "";
-            }
-            catch (Exception ex) { RecycleWhy("closing it failed: " + ex.Message); }
-            finally { p.Dispose(); }
-        }
-    }
-
     /// <summary>The Win+V panel is "the app in focus" while one of TextInputHost's threads has keyboard focus in a CoreComponentInputSource
     /// window (found with the diagnostics log; the foreground window never changes for it). Polled every tick; the focus event
     /// (see OnPanelOpened) lifts the limit even faster at the moment it opens.</summary>
@@ -134,7 +67,57 @@ internal sealed partial class Engine
         }
         return false;
     }
-    bool _panelWasOpen;
+    bool _panelWasOpen, _panelOpenCached;
+    DateTime _panelPoll = DateTime.MinValue, _cleanAt = DateTime.UtcNow;
+
+    /// <summary>Every 10 minutes, whatever the mode and whether the game gate is open (called at the top of TickFocus, under Gate):
+    /// forgets the bookkeeping of apps and processes that are gone, so no dictionary grows for days. Names of installers / updaters
+    /// with random file names are what used to pile up in _groups, _synth and _neutral.</summary>
+    void CleanCaches(DateTime now)
+    {
+        if (_briefCount.Count > 200) _briefCount.Clear();
+        foreach (var kv in _prefetchAt.ToList())
+            if ((now - kv.Value).TotalMinutes > 10) _prefetchAt.TryRemove(kv.Key, out _);
+        foreach (var kv in _uses.ToList())
+        {
+            bool empty;
+            lock (kv.Value)
+            {
+                while (kv.Value.Count > 0 && (now - kv.Value.Peek()).TotalMinutes > 30) kv.Value.Dequeue();
+                empty = kv.Value.Count == 0;
+            }
+            if (empty) _uses.TryRemove(kv.Key, out _);
+        }
+
+        // Everything below is keyed by process id or by app name: keep only what is still running.
+        var map = Native.ProcessMap();
+        if (map.Count == 0) return;   // the snapshot failed: do not wipe anything on a bad reading
+        var livePids = new HashSet<int>(map.Keys);
+        var liveNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var v in map.Values) liveNames.Add(v.Name);
+
+        foreach (var k in _groups.Keys.Where(k => !liveNames.Contains(k)).ToList()) _groups.Remove(k);
+        foreach (var k in _synth.Keys.Where(k => !liveNames.Contains(k)).ToList()) _synth.Remove(k);
+        foreach (var k in _neutral.Keys.Where(k => !liveNames.Contains(k)).ToList()) _neutral.Remove(k);
+        foreach (var k in _statusAt.Keys.Where(k => !liveNames.Contains(k)).ToList()) _statusAt.Remove(k);
+        _loggedNames.RemoveWhere(k => !liveNames.Contains(k));
+        _audioLogged.RemoveWhere(k => !liveNames.Contains(k));
+
+        foreach (var k in _cpuPrev.Keys.Where(k => !livePids.Contains(k)).ToList()) _cpuPrev.Remove(k);
+        foreach (var k in _tuneLogAt.Keys.Where(k => !livePids.Contains(k)).ToList()) _tuneLogAt.Remove(k);
+        foreach (var k in _softLogAt.Keys.Where(k => !livePids.Contains(k)).ToList()) _softLogAt.Remove(k);
+        foreach (var k in _hot.Keys.Where(k => !livePids.Contains(k)).ToList()) _hot.TryRemove(k, out _);
+        foreach (var k in _resident.Keys.Where(k => !livePids.Contains(k)).ToList()) _resident.TryRemove(k, out _);
+        foreach (var k in _wokenAt.Keys.Where(k => !livePids.Contains(k)).ToList()) _wokenAt.TryRemove(k, out _);
+        _prioFail.RemoveWhere(k => !livePids.Contains(k));
+
+        // Popup apps are learned from a few brief visits: they are forgotten after two hours or when the app is gone.
+        foreach (var k in _popupNames.Where(k => !liveNames.Contains(k) || !_popupAt.TryGetValue(k, out var at) || (now - at).TotalHours >= 2).ToList())
+        { _popupNames.Remove(k); _popupAt.Remove(k); }
+        foreach (var k in _fsLeftSince.Keys.Where(k => !_gameNames.Contains(k)).ToList()) _fsLeftSince.Remove(k);
+
+        try { Suspender.PruneDead(); } catch { }
+    }
 
     /// <summary>Called the moment the Win+V panel takes focus: lifts TextInputHost's ceiling at once, like OnForeground does for a normal app.</summary>
     public void OnPanelOpened()
@@ -145,7 +128,6 @@ internal sealed partial class Engine
             if (_groups.TryGetValue("TextInputHost", out var g)) { g.Holding = false; g.CritDone = false; }
             if (_limited.Count > 0) ReleaseByName("TextInputHost");
         }
-        if (Config.DebugInputHost) Logger.Write("InputHost: panel opened - TextInputHost limit lifted");
     }
 
     // Most recently used apps (newest first), kept from the foreground events. Alt+Tab goes to the second one first, then the third, ...
@@ -215,8 +197,11 @@ internal sealed partial class Engine
         catch { return; }
         if (name.Length == 0 || MruSkip.Contains(name)) return;   // shell / Start / UWP frame: handled elsewhere
         var now = DateTime.UtcNow;
-        if (string.Equals(name, _clickTarget, StringComparison.OrdinalIgnoreCase) && (now - _clickTargetAt).TotalSeconds < 2) return;
-        _clickTarget = name; _clickTargetAt = now;
+        lock (_evLock)
+        {
+            if (string.Equals(name, _clickTarget, StringComparison.OrdinalIgnoreCase) && (now - _clickTargetAt).TotalSeconds < 2) return;
+            _clickTarget = name; _clickTargetAt = now;
+        }
         lock (Gate)
         {
             if (!_exempt.Contains(name) && !IsException(name))
@@ -238,8 +223,11 @@ internal sealed partial class Engine
     {
         if (!Enabled || !Config.Enabled || !Config.WakeStartOnKey) return;
         var now = DateTime.UtcNow;
-        if ((now - _startKeyAt).TotalSeconds < 3) return;   // key repeat, or Win+other shortcuts in a row
-        _startKeyAt = now;
+        lock (_evLock)
+        {
+            if ((now - _startKeyAt).TotalSeconds < 3) return;   // key repeat, or Win+other shortcuts in a row
+            _startKeyAt = now;
+        }
         lock (Gate)
         {
             foreach (var host in StartHosts)
@@ -260,8 +248,11 @@ internal sealed partial class Engine
     {
         if (!Enabled || !Config.Enabled || !Config.WakeWinVOnKey) return;
         var now = DateTime.UtcNow;
-        if ((now - _panelKeyAt).TotalMilliseconds < 500) return;   // key repeat
-        _panelKeyAt = now;
+        lock (_evLock)
+        {
+            if ((now - _panelKeyAt).TotalMilliseconds < 500) return;   // key repeat
+            _panelKeyAt = now;
+        }
         lock (Gate)
         {
             if (_groups.TryGetValue("TextInputHost", out var g)) { g.Holding = false; g.CritDone = false; }
@@ -270,44 +261,18 @@ internal sealed partial class Engine
         double freePct = Native.FreeRamPercent();
         if (freePct >= 0 && freePct < Config.PrefetchMinFreePercent) return;   // limit already lifted above; just do not pull more pages in
         WakeApp("TextInputHost", WakeBudget("TextInputHost"));
-        if (Config.DebugInputHost) Logger.Write("InputHost: Win+V pressed - limit lifted and pages prefetched before the panel opened");
     }
 
-    string _recycleWhy = "";
-    /// <summary>Logs (only when the reason changes) why an oversized TextInputHost was not closed yet, so the log explains a "nothing happens".</summary>
-    void RecycleWhy(string why)
-    {
-        if (why == _recycleWhy) return;
-        _recycleWhy = why;
-        Logger.Write("InputHost recycler: waiting - " + why);
-    }
-
-    void TrimBurstLater(string name)
-    {
-        Task.Run(async () =>
-        {
-            foreach (int ms in new[] { 1200, 3800 })   // twice: pages touched while it was closing go back too
-            {
-                await Task.Delay(ms);
-                if (!Enabled || !Config.Enabled) return;
-                var (_, now) = ForegroundProc();
-                if (string.Equals(now, name, StringComparison.OrdinalIgnoreCase)) return;   // opened again: leave it
-                foreach (var kv in Native.ProcessMap())
-                    if (string.Equals(kv.Value.Name, name, StringComparison.OrdinalIgnoreCase)) Native.Trim(kv.Key);
-            }
-        });
-    }
-
+    /// <summary>Called by Windows' foreground-change event (any thread). Lifts the limit of the new foreground app right away,
+    /// then reads its trimmed pages back into RAM. The regular tick still does the full bookkeeping a moment later.</summary>
     public void OnForeground()
     {
         if (!Enabled || !Config.Enabled) return;
         var (pid, name) = ForegroundProc();
         if (pid == 0 || name.Length == 0 || string.Equals(name, "GameRamCap", StringComparison.OrdinalIgnoreCase)) return;
-        string prev = _lastFgEvent;
-        _lastFgEvent = name;
+        string prev = Interlocked.Exchange(ref _lastFgEvent, name);
         if (!string.Equals(prev, name, StringComparison.OrdinalIgnoreCase)) RecordUse(name);
         TrackMru(name);
-        if (prev.Length > 0 && !string.Equals(prev, name, StringComparison.OrdinalIgnoreCase) && false && BurstApps.Contains(prev)) TrimBurstLater(prev);   // disabled: trimming right after use caused stutter
         lock (Gate)
         {
             if (!_exempt.Contains(name) && !IsException(name))
@@ -318,8 +283,11 @@ internal sealed partial class Engine
         }
         if (!Config.PrefetchApps) return;
         var now = DateTime.UtcNow;
-        if (_prefetchAt.TryGetValue(name, out var last) && (now - last).TotalSeconds < (BurstApps.Contains(name) ? 3 : 20)) return;   // not again and again
-        _prefetchAt[name] = now;
+        lock (_evLock)
+        {
+            if (_prefetchAt.TryGetValue(name, out var last) && (now - last).TotalSeconds < (BurstApps.Contains(name) ? 3 : 20)) return;   // not again and again
+            _prefetchAt[name] = now;
+        }
         double free = Native.FreeRamPercent();
         if (free >= 0 && free < Config.PrefetchMinFreePercent) return;   // RAM is really short: do not pull more in
         WakeApp(name, WakeBudget(name));
@@ -335,7 +303,7 @@ internal sealed partial class Engine
             _briefCount[_fgPrev] = n;
             // seen briefly 3 times, and really small (a normal app you only glance at is not a popup)
             if (n >= 3 && Native.GetMemory(_fgPrevPid, out long ws, out _) && ws < 80L * 1024 * 1024)
-                _popupNames.Add(_fgPrev);
+            { _popupNames.Add(_fgPrev); _popupAt[_fgPrev] = now; }
         }
         _fgPrev = fg; _fgPrevPid = fgPid; _fgPrevSince = now;
     }
@@ -370,6 +338,23 @@ internal sealed partial class Engine
                 _gameNames.Add(fg);
                 Logger.Write($"Fullscreen app detected: {fg} - protected from trimming while it runs.");
             }
+        }
+
+        // Taken for a game only because it was fullscreen (not in the Games list), and now in front but NOT fullscreen for 10 s
+        // (a video player left in a window, a presentation that ended): it is a normal app again. Games in the Games list stay.
+        if (fg.Length > 0 && _gameNames.Contains(fg) && !Config.Games.Contains(fg, StringComparer.OrdinalIgnoreCase))
+        {
+            var hw = Native.GetForegroundWindow();
+            if (hw != IntPtr.Zero && !IsFullscreen(hw))
+            {
+                if (!_fsLeftSince.TryGetValue(fg, out var since)) _fsLeftSince[fg] = now;
+                else if ((now - since).TotalSeconds >= 10)
+                {
+                    _gameNames.Remove(fg); _fsLeftSince.Remove(fg);
+                    Logger.Write($"{fg} is no longer fullscreen - treated as a normal app again.");
+                }
+            }
+            else _fsLeftSince.Remove(fg);
         }
 
         if ((now - _lastGameCheck).TotalSeconds >= 5)
@@ -417,9 +402,14 @@ internal sealed partial class Engine
     int _treePid;
     DateTime _treeAt = DateTime.MinValue;
 
-    HashSet<string> TreeNames(int pid, DateTime now)
+    // A shell process in front (Explorer: desktop, taskbar, the Alt+Tab switcher; Start; Search) is NOT a root: Explorer is the parent
+    // of nearly every app the user started, so walking its children would put the whole desktop "in focus" and lift every ceiling
+    // each time you Alt+Tab. Parents are still walked for normal apps; a sane app has far fewer than MaxTreeChildren descendants.
+    const int MaxTreeChildren = 60;
+
+    HashSet<string> TreeNames(int pid, string fgName, DateTime now)
     {
-        if (pid == 0) return new(StringComparer.OrdinalIgnoreCase);
+        if (pid == 0 || ProtectedFull.Contains(fgName)) return new(StringComparer.OrdinalIgnoreCase);
         if (pid == _treePid && (now - _treeAt).TotalSeconds < 2) return _treeNames;
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
@@ -438,9 +428,11 @@ internal sealed partial class Engine
             var kids = map.Where(kv => kv.Key != kv.Value.Parent).ToLookup(kv => kv.Value.Parent, kv => kv.Key);
             var queue = new Queue<int>(); queue.Enqueue(pid);
             var visited = new HashSet<int> { pid };
+            var childNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             while (queue.Count > 0)
                 foreach (int k in kids[queue.Dequeue()])
-                    if (visited.Add(k)) { set.Add(map[k].Name); queue.Enqueue(k); }
+                    if (visited.Add(k)) { childNames.Add(map[k].Name); queue.Enqueue(k); }
+            if (visited.Count - 1 <= MaxTreeChildren) set.UnionWith(childNames);   // a huge tree is a launcher / shell-like parent, not "the app in use"
         }
         catch { }
         _treePid = pid; _treeAt = now; _treeNames = set;
@@ -457,6 +449,12 @@ internal sealed partial class Engine
 
     void TickFocus()
     {
+        var cnow = DateTime.UtcNow;
+        if ((cnow - _cleanAt).TotalMinutes >= 10)
+        {
+            _cleanAt = cnow;
+            try { CleanCaches(cnow); } catch (Exception ex) { Logger.Write("Cache cleanup: " + ex.Message); }
+        }
         if (!(Enabled && Config.Enabled))
         {
             if (_wasActive) { _wasActive = false; Logger.Write("Disabled - limits restored."); }
@@ -468,7 +466,7 @@ internal sealed partial class Engine
         // Game gate: with "Limit all the time" off, limits only apply while a game runs and has been in front for
         // DelaySeconds. KeepLimitsWhileGameRuns keeps them on after Alt+Tab until the game process exits.
         var gnow = DateTime.UtcNow;
-        bool gaming = !Config.AlwaysLimit && IsGaming();
+        bool gaming = !Config.AlwaysLimit && IsGamingOnce();
         if (gaming) { if (_gamingSince == DateTime.MinValue) _gamingSince = gnow; }
         else _gamingSince = DateTime.MinValue;
         bool gateOpen = Config.AlwaysLimit || (gaming && (gnow - _gamingSince).TotalSeconds >= Math.Max(0, Config.DelaySeconds));
@@ -505,8 +503,6 @@ internal sealed partial class Engine
         // A process that was refused once (busy, transient error) gets another chance every 5 minutes.
         if ((now - _failReset).TotalMinutes >= 5) { _failReset = now; _failLogged.Clear(); }
         TrackFullscreenGame(fg, now);
-        RecycleInputHost(fg, now);
-        DebugInputHost();
 
         // Names that count as "in focus" right now: the foreground app + any target it stands for.
         var focusNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -518,13 +514,13 @@ internal sealed partial class Engine
         }
         foreach (var t in Config.Targets)
             if (!string.IsNullOrWhiteSpace(t.Exe) && IsFocused(t, fg)) focusNames.Add(t.Exe);
-        foreach (var n in TreeNames(fgPid, now)) focusNames.Add(n);
-        bool panelOpen = InputPanelOpen();
+        foreach (var n in TreeNames(fgPid, fg, now)) focusNames.Add(n);
+        if ((now - _panelPoll).TotalMilliseconds >= 1000) { _panelPoll = now; _panelOpenCached = InputPanelOpen(); }   // it walks the threads of TextInputHost: once a second is plenty (the focus event lifts the limit at once)
+        bool panelOpen = _panelOpenCached;
         if (panelOpen) focusNames.Add("TextInputHost");   // the Win+V panel counts as the app in use while it is open
         if (panelOpen != _panelWasOpen)
         {
             _panelWasOpen = panelOpen;
-            if (Config.DebugInputHost) Logger.Write(panelOpen ? "InputHost: panel in focus" : "InputHost: panel closed - TextInputHost is a background app again");
         }
         if (Config.RecentActivitySeconds > 0)
         {

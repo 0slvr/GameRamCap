@@ -17,8 +17,7 @@ internal sealed partial class Engine
     {
         if (!WakeAny || Config.PrefetchMaxMB <= 0) return;
         if (ws > 0 && ws < 4 * MB) return;                       // too small to matter
-        DateTime start;
-        try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return; }
+        if (Native.GetStartTime(pid) is not DateTime start) return;
         if (_resident.TryGetValue(pid, out var old) && old.ProcStart == start && (DateTime.UtcNow - old.Taken).TotalSeconds < 30) return;
         var set = Native.CaptureResident(pid);
         if (set == null) return;
@@ -40,8 +39,7 @@ internal sealed partial class Engine
     {
         if (_resident.TryRemove(pid, out var set))
         {
-            DateTime start;
-            try { using var p = Process.GetProcessById(pid); start = p.StartTime; } catch { return 0; }
+            if (Native.GetStartTime(pid) is not DateTime start) return 0;
             if (start == set.ProcStart)
             {
                 long n = Native.PrefetchResident(pid, set, budget);
@@ -54,8 +52,18 @@ internal sealed partial class Engine
         return Native.Prefetch(pid, Math.Min(budget, Math.Max(1, Config.PrefetchMaxMB) * 1024L * 1024));
     }
 
+    readonly SemaphoreSlim _wakeGate = new(1, 1);
+
     /// <summary>Wakes every process of an app within one shared budget: the ones with the biggest saved hot set first.</summary>
     long WakeApp(string name, long budget)
+    {
+        // One wake-up reads pages at a time: a burst of events (Alt+Tab through several apps) must not pile up disk reads next to the game.
+        if (!_wakeGate.Wait(250)) return 0;
+        try { return WakeAppCore(name, budget); }
+        finally { _wakeGate.Release(); }
+    }
+
+    long WakeAppCore(string name, long budget)
     {
         var pids = new List<int>();
         foreach (var kv in Native.ProcessMap())

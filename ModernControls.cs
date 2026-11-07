@@ -551,7 +551,7 @@ internal sealed class ModernTabs : Control
             if (e.Button == MouseButtons.Left)
             {
                 int i = HitTest(e.Location);
-                if (i >= 0 && i < _owner._inner.TabPages.Count) _owner._inner.SelectedIndex = i;
+                if (i >= 0 && i < _owner._inner.TabPages.Count && _owner.Allow(_owner._inner.TabPages[i])) _owner._inner.SelectedIndex = i;
             }
             base.OnMouseDown(e);
         }
@@ -580,8 +580,12 @@ internal sealed class ModernTabs : Control
     public TabPage? SelectedTab
     {
         get => _inner.SelectedTab;
-        set => _inner.SelectedTab = value;
+        set { if (value == null || Allow(value)) _inner.SelectedTab = value; }
     }
+
+    /// <summary>Asked before the selected tab changes (by click or by code): (from, to) -> may we leave? Used to warn about unsaved edits.</summary>
+    public Func<TabPage?, TabPage?, bool>? CanLeave { get; set; }
+    bool Allow(TabPage target) => CanLeave?.Invoke(_inner.SelectedTab, target) ?? true;
 
     public event EventHandler? SelectedIndexChanged;
 }

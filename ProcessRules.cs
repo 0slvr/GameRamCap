@@ -74,19 +74,34 @@ internal static class ProcessRules
 
     static DateTime _last = DateTime.MinValue;
 
-    /// <summary>Called from the engine tick: re-applies every saved rule (new processes get it within ~5 seconds).</summary>
+    static readonly Dictionary<string, (bool pri, bool aff)> Applied = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Called from the engine tick: re-applies every saved rule (new processes get it within ~5 seconds).
+    /// A rule that was deleted puts Normal priority / all cores back on that app.</summary>
     public static void Apply(Config cfg)
     {
-        var rules = cfg.Rules;
-        if (rules == null || rules.Count == 0) return;
+        var rules = cfg.Rules ?? new List<ProcessRule>();
+        if (rules.Count == 0 && Applied.Count == 0) return;
         var now = DateTime.UtcNow;
         if ((now - _last).TotalSeconds < 5) return;
         _last = now;
+
+        var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rules)
+            if (!string.IsNullOrWhiteSpace(r.Exe) && (r.Priority.Length > 0 || r.AffinityMask != 0)) live.Add(r.Exe);
+        foreach (var kv in Applied.ToList())
+        {
+            if (live.Contains(kv.Key)) continue;
+            SetNow(kv.Key, kv.Value.pri ? "Normal" : "", kv.Value.aff ? AllCoresMask() : 0);
+            Applied.Remove(kv.Key);
+        }
+
         foreach (var r in rules)
         {
             if (string.IsNullOrWhiteSpace(r.Exe) || Engine.Protected.Contains(r.Exe)) continue;
             if (r.Priority.Length == 0 && r.AffinityMask == 0) continue;
             SetNow(r.Exe, r.Priority, r.AffinityMask);
+            Applied[r.Exe] = (r.Priority.Length > 0, r.AffinityMask != 0);
         }
     }
 }

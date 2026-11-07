@@ -24,8 +24,10 @@ internal static class PowerPlan
                 RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
             });
             if (p == null) return (-1, "");
-            string text = p.StandardOutput.ReadToEnd();
-            if (!p.WaitForExit(8000)) { try { p.Kill(); } catch { } return (-1, text); }
+            var outTask = p.StandardOutput.ReadToEndAsync();   // read in the background, so the timeout below really works
+            _ = p.StandardError.ReadToEndAsync();
+            if (!p.WaitForExit(8000)) { try { p.Kill(); } catch { } return (-1, ""); }
+            string text = outTask.Wait(2000) ? outTask.Result : "";
             return (p.ExitCode, text);
         }
         catch { return (-1, ""); }
@@ -49,7 +51,7 @@ internal static class PowerPlan
             if (_original != null) return true;
             var cur = Active();
             if (cur == null || string.Equals(cur, HighPerformance, StringComparison.OrdinalIgnoreCase)) return false;
-            try { Directory.CreateDirectory(ConfigStore.Dir); File.WriteAllText(FilePath, cur); } catch { }
+            try { SecureStore.WriteAllText(FilePath, cur); } catch { }
             var (code, _) = Run("/setactive " + HighPerformance);
             if (code != 0 || !string.Equals(Active(), HighPerformance, StringComparison.OrdinalIgnoreCase))
             {

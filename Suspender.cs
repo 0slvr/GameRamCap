@@ -11,10 +11,6 @@ internal static class Suspender
 {
     const uint PROCESS_SUSPEND_RESUME = 0x0800;
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool CloseHandle(IntPtr handle);
     [DllImport("ntdll.dll")]
     static extern int NtSuspendProcess(IntPtr process);
     [DllImport("ntdll.dll")]
@@ -39,8 +35,7 @@ internal static class Suspender
         try
         {
             if (Frozen.Count == 0) { if (File.Exists(FilePath)) File.Delete(FilePath); return; }
-            Directory.CreateDirectory(ConfigStore.Dir);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(Frozen.Values.ToList()));
+            SecureStore.WriteAllText(FilePath, JsonSerializer.Serialize(Frozen.Values.ToList()));
         }
         catch { }
     }
@@ -52,52 +47,99 @@ internal static class Suspender
 
     public static int Count { get { lock (Lock) return Frozen.Count; } }
 
+    /// <summary>Forgets frozen entries whose process has exited (or whose PID now belongs to another program), so IsFrozen / Count
+    /// do not report dead apps and a reused PID is not blocked. A live process whose start time cannot be read is kept.</summary>
+    public static int PruneDead()
+    {
+        int n = 0;
+        lock (Lock)
+        {
+            foreach (var e in Frozen.Values.ToList())
+            {
+                bool gone;
+                try
+                {
+                    using var p = Process.GetProcessById(e.Pid);
+                    long cur = StartOf(p);
+                    gone = cur != 0 && cur != e.StartTicks;
+                }
+                catch { gone = true; }   // no such process
+                if (gone) { Frozen.Remove(e.Pid); n++; }
+            }
+            if (n > 0) Persist();
+        }
+        return n;
+    }
+
     /// <summary>Freezes every process of the app. System, security and recording processes (Engine.Protected) and
     /// GameRamCap itself are refused. Returns how many were frozen / failed.</summary>
     public static (int ok, int failed) Suspend(string name)
     {
-        if (Engine.Protected.Contains(name)) return (0, 0);
         int ok = 0, failed = 0, self = Environment.ProcessId;
         Process[] list;
         try { list = Process.GetProcessesByName(name); } catch { return (0, 0); }
+
+        // Pass 1: decide what to freeze and write it to suspended.json BEFORE anything is frozen,
+        // so a crash in the middle can never leave an app frozen without a record.
+        var todo = new List<Entry>();
         foreach (var p in list)
         {
             try
             {
                 if (p.Id == self) continue;
+                if (Engine.IsProtected(name, p.Id)) continue;             // by name, but a fake "lsass" is not protected
                 lock (Lock) { if (Frozen.ContainsKey(p.Id)) continue; }   // already frozen: never freeze twice
-                var h = OpenProcess(PROCESS_SUSPEND_RESUME, false, p.Id);
-                if (h == IntPtr.Zero) { failed++; continue; }
-                try
-                {
-                    if (NtSuspendProcess(h) == 0)
-                    {
-                        lock (Lock) Frozen[p.Id] = new Entry { Pid = p.Id, Name = name, StartTicks = StartOf(p) };
-                        ok++;
-                    }
-                    else failed++;
-                }
-                finally { CloseHandle(h); }
+                long startTicks = StartOf(p);
+                if (startTicks == 0) { failed++; continue; }              // without a start time it could not be resumed safely later
+                todo.Add(new Entry { Pid = p.Id, Name = name, StartTicks = startTicks });
             }
             catch { failed++; }
             finally { p.Dispose(); }
         }
-        lock (Lock) Persist();
+        if (todo.Count == 0) return (0, failed);
+        lock (Lock)
+        {
+            foreach (var e in todo) Frozen[e.Pid] = e;
+            Persist();
+        }
+
+        // Pass 2: freeze. A process that cannot be frozen is taken off the record again.
+        var notFrozen = new List<int>();
+        foreach (var e in todo)
+        {
+            var h = Native.OpenProcess(PROCESS_SUSPEND_RESUME, false, e.Pid);
+            if (h == IntPtr.Zero) { notFrozen.Add(e.Pid); failed++; continue; }
+            try
+            {
+                if (NtSuspendProcess(h) == 0) ok++;
+                else { notFrozen.Add(e.Pid); failed++; }
+            }
+            finally { Native.CloseHandle(h); }
+        }
+        if (notFrozen.Count > 0)
+            lock (Lock)
+            {
+                foreach (int pid in notFrozen) Frozen.Remove(pid);
+                Persist();
+            }
         return (ok, failed);
     }
 
-    static bool ResumeOne(Entry e)
+    /// <summary>0 = nothing to resume (process gone, or the PID now belongs to another program), 1 = resumed,
+    /// 2 = the process is alive but could not be resumed (it must stay in the list so it is tried again).</summary>
+    static int ResumeOne(Entry e)
     {
         try
         {
             using var p = Process.GetProcessById(e.Pid);
-            if (e.StartTicks != 0 && StartOf(p) != e.StartTicks) return false;   // PID was reused by another program
-            var h = OpenProcess(PROCESS_SUSPEND_RESUME, false, e.Pid);
-            if (h == IntPtr.Zero) return false;
-            try { return NtResumeProcess(h) == 0; }
-            finally { CloseHandle(h); }
+            if (e.StartTicks == 0 || StartOf(p) != e.StartTicks) return 0;   // PID was reused by another program (or the entry is not ours)
+            if (!string.Equals(p.ProcessName, e.Name, StringComparison.OrdinalIgnoreCase)) return 0;
+            var h = Native.OpenProcess(PROCESS_SUSPEND_RESUME, false, e.Pid);
+            if (h == IntPtr.Zero) return 2;
+            try { return NtResumeProcess(h) == 0 ? 1 : 2; }
+            finally { Native.CloseHandle(h); }
         }
-        catch { return false; }   // process is gone: nothing to resume
+        catch { return 0; }   // process is gone: nothing to resume
     }
 
     static int ResumeWhere(Func<Entry, bool> pick)
@@ -107,7 +149,9 @@ internal static class Suspender
         {
             foreach (var e in Frozen.Values.Where(pick).ToList())
             {
-                if (ResumeOne(e)) n++;
+                int r = ResumeOne(e);
+                if (r == 1) n++;
+                if (r == 2) { Logger.Write($"Could not resume {e.Name} (pid {e.Pid}) - it stays on the frozen list and is tried again."); continue; }
                 Frozen.Remove(e.Pid);
             }
             Persist();
@@ -120,7 +164,8 @@ internal static class Suspender
 
     public static int ResumeAll() => ResumeWhere(_ => true);
 
-    /// <summary>After a crash / End Task: resumes whatever the previous run left frozen (also used by the watchdog).</summary>
+    /// <summary>After a crash / End Task: resumes whatever the previous run left frozen (also used by the watchdog).
+    /// A process that is alive but could not be resumed is kept in the file, never forgotten.</summary>
     public static int RecoverStale()
     {
         int n = 0;
@@ -128,9 +173,16 @@ internal static class Suspender
         {
             if (!File.Exists(FilePath)) return 0;
             var list = JsonSerializer.Deserialize<List<Entry>>(File.ReadAllText(FilePath)) ?? new();
-            foreach (var e in list)
-                if (ResumeOne(e)) n++;
-            File.Delete(FilePath);
+            lock (Lock)
+            {
+                foreach (var e in list)
+                {
+                    int r = ResumeOne(e);
+                    if (r == 1) n++;
+                    else if (r == 2) Frozen[e.Pid] = e;   // still frozen: keep it on record
+                }
+                Persist();   // writes the leftovers, or deletes the file when nothing is left
+            }
         }
         catch { }
         return n;

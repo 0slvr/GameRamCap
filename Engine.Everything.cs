@@ -12,8 +12,22 @@ internal sealed partial class Engine
     readonly Dictionary<string, Target> _synth = new(StringComparer.OrdinalIgnoreCase);
     readonly HashSet<string> _loggedNames = new(StringComparer.OrdinalIgnoreCase);
 
-    bool IsException(string name) =>
-        Config.Exceptions.Contains(name, StringComparer.OrdinalIgnoreCase);
+    // Exceptions as a set (it is asked for every process on every scan). Rebuilt when the list object or its size changes;
+    // always called under Gate.
+    List<string>? _excSrc; int _excCount = -1;
+    HashSet<string> _excSet = new(StringComparer.OrdinalIgnoreCase);
+    bool IsException(string name)
+    {
+        var src = Config.Exceptions;
+        if (src == null) return false;
+        if (!ReferenceEquals(src, _excSrc) || src.Count != _excCount)
+        {
+            var snap = src.ToArray();
+            _excSet = new HashSet<string>(snap.Where(s => s != null), StringComparer.OrdinalIgnoreCase);
+            _excSrc = src; _excCount = snap.Length;
+        }
+        return _excSet.Contains(name);
+    }
 
     readonly Dictionary<string, Target> _neutral = new(StringComparer.OrdinalIgnoreCase);
 
@@ -58,16 +72,17 @@ internal sealed partial class Engine
             _lastScan = DateTime.MinValue;
         }
 
-        // Focus changes are handled every tick: lift the limit at once.
-        foreach (var name in _exempt) ReleaseByName(name);
-        foreach (var name in _gameNames) ReleaseByName(name); // detected games are never capped
-
+        // Focus changes are handled at once: lift the limit when the exempt / game names change, otherwise with the 1 s scan
+        // (ReleaseByName enumerates every process, so it is not done on every tick for every name).
         var now = DateTime.UtcNow;
-        string key = string.Join("|", _exempt.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+        string key = string.Join("|", _exempt.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                   + "#" + string.Join("|", _gameNames.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
         bool exemptChanged = key != _lastExemptKey;
         if (!exemptChanged && (now - _lastScan).TotalSeconds < 1.0) return;
         _lastExemptKey = key;
         _lastScan = now;
+        foreach (var name in _exempt.ToList()) ReleaseByName(name);
+        foreach (var name in _gameNames.ToList()) ReleaseByName(name); // detected games are never capped
 
         var alive = new HashSet<int>();
         var all = Safe(() => Process.GetProcesses());
@@ -80,12 +95,12 @@ internal sealed partial class Engine
             try
             {
                 int pid = p.Id;
-                if (pid <= 4) continue;
+                if (pid <= 4 || pid == SelfPid) continue;
                 alive.Add(pid);
                 if (_failLogged.Contains(pid)) continue;           // access denied before: do not retry
 
                 string name = p.ProcessName;
-                if (Protected.Contains(name) || IsException(name) || _exempt.Contains(name) || _gameNames.Contains(name)) continue;
+                if (IsProtected(name, pid) || IsException(name) || _exempt.Contains(name) || _gameNames.Contains(name)) continue;
 
                 DateTime start = Safe(() => p.StartTime, DateTime.MinValue);
                 var t = ResolveTarget(name);

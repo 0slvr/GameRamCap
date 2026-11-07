@@ -8,20 +8,6 @@ internal static class StandbyCleaner
 {
     [DllImport("ntdll.dll")]
     static extern int NtSetSystemInformation(int infoClass, ref int info, int length);
-    [DllImport("advapi32.dll", SetLastError = true)]
-    static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool LookupPrivilegeValueW(string? system, string name, out long luid);
-    [DllImport("advapi32.dll", SetLastError = true)]
-    static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES state, int length, IntPtr previous, IntPtr returnLength);
-    [DllImport("kernel32.dll")]
-    static extern IntPtr GetCurrentProcess();
-    [DllImport("kernel32.dll")]
-    static extern bool CloseHandle(IntPtr handle);
-
-    [StructLayout(LayoutKind.Sequential, Pack = 4)]
-    struct TOKEN_PRIVILEGES { public uint Count; public long Luid; public uint Attributes; }
-
     const int SystemMemoryListInformation = 80;
     const int MemoryPurgeStandbyList = 4;
     static bool _privilege, _privilegeFailed;
@@ -33,18 +19,13 @@ internal static class StandbyCleaner
     {
         if (_privilege) return true;
         if (_privilegeFailed) return false;
-        IntPtr tok = IntPtr.Zero;
-        try
+        _privilege = Privilege.Enable("SeProfileSingleProcessPrivilege");
+        if (!_privilege)
         {
-            if (!OpenProcessToken(GetCurrentProcess(), 0x28 /* ADJUST_PRIVILEGES | QUERY */, out tok)) { _privilegeFailed = true; return false; }
-            if (!LookupPrivilegeValueW(null, "SeProfileSingleProcessPrivilege", out long luid)) { _privilegeFailed = true; return false; }
-            var tp = new TOKEN_PRIVILEGES { Count = 1, Luid = luid, Attributes = 2 /* SE_PRIVILEGE_ENABLED */ };
-            bool ok = AdjustTokenPrivileges(tok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero) && Marshal.GetLastWin32Error() == 0;
-            if (!ok) { _privilegeFailed = true; Logger.Write("Standby cleaner: no permission for SeProfileSingleProcessPrivilege (is GameRamCap running as administrator?)."); }
-            return _privilege = ok;
+            _privilegeFailed = true;
+            Logger.Write("Standby cleaner: no permission for SeProfileSingleProcessPrivilege (is GameRamCap running as administrator?).");
         }
-        catch { _privilegeFailed = true; return false; }
-        finally { if (tok != IntPtr.Zero) CloseHandle(tok); }
+        return _privilege;
     }
 
     /// <summary>Free (free + zeroed) memory and standby cache in bytes. Note: "available RAM" includes the standby list,
@@ -118,7 +99,7 @@ internal sealed partial class Engine
         if ((now - _standbyCheck).TotalSeconds < 5) return;   // counters are cheap, but no need to read them every tick
         _standbyCheck = now;
         if ((now - _standbyLast).TotalSeconds < Math.Max(10, Config.StandbyMinIntervalSeconds)) return;
-        if (!IsGaming()) return;
+        if (!IsGamingOnce()) return;
         if (!StandbyCleaner.TryRead(out long free, out long standby)) return;
         if (free > Config.StandbyFreeBelowMB * MB || standby < Config.StandbyMinMB * MB) return;
         _standbyLast = now;

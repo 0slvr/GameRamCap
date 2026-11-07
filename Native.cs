@@ -3,7 +3,7 @@ using System.Text;
 
 namespace GameRamCap;
 
-internal static class Native
+internal static partial class Native
 {
     const uint PROCESS_QUERY_INFORMATION = 0x0400;
     const uint PROCESS_SET_QUOTA = 0x0100;
@@ -14,10 +14,10 @@ internal static class Native
     const uint HARDWS_MAX_DISABLE = 0x8;
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    internal static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool CloseHandle(IntPtr handle);
+    internal static extern bool CloseHandle(IntPtr handle);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GetProcessWorkingSetSizeEx(IntPtr process, out nuint min, out nuint max, out uint flags);
@@ -128,7 +128,22 @@ internal static class Native
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder name, ref uint size);
+    static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, [Out] char[] name, ref uint size);
+
+    /// <summary>When the process started (local time, the same value as Process.StartTime), or null if it cannot be read / is gone.
+    /// One handle and one call: no Process object, no list of all PIDs.</summary>
+    public static DateTime? GetStartTime(int pid)
+    {
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (h == IntPtr.Zero) return null;
+        try
+        {
+            if (!GetProcessTimes(h, out long creation, out _, out _, out _) || creation <= 0) return null;
+            return DateTime.FromFileTime(creation);
+        }
+        catch { return null; }
+        finally { CloseHandle(h); }
+    }
 
     /// <summary>Full path of the process' exe (works for most processes with only limited access). null when it cannot be read.</summary>
     public static string? GetImagePath(int pid)
@@ -137,9 +152,14 @@ internal static class Native
         if (h == IntPtr.Zero) return null;
         try
         {
-            var sb = new StringBuilder(1024);
-            uint size = (uint)sb.Capacity;
-            return QueryFullProcessImageNameW(h, 0, sb, ref size) ? sb.ToString() : null;
+            foreach (int len in new[] { 1024, 32768 })   // 32768 = the longest path Windows allows
+            {
+                var buf = new char[len];
+                uint size = (uint)len;
+                if (QueryFullProcessImageNameW(h, 0, buf, ref size)) return new string(buf, 0, (int)size);
+                if (Marshal.GetLastWin32Error() != 122 /* ERROR_INSUFFICIENT_BUFFER */) return null;
+            }
+            return null;
         }
         finally { CloseHandle(h); }
     }
@@ -218,7 +238,7 @@ internal static class Native
     public static bool TryGetLimits(int pid, out nuint min, out nuint max)
     {
         min = max = 0;
-        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);   // reading needs no write right
         if (h == IntPtr.Zero) return false;
         try { return GetProcessWorkingSetSizeEx(h, out min, out max, out _); }
         finally { CloseHandle(h); }
@@ -228,7 +248,7 @@ internal static class Native
     public static bool HasHardCeiling(int pid, out nuint min, out nuint max)
     {
         min = max = 0;
-        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
+        var h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return false;
         try { return GetProcessWorkingSetSizeEx(h, out min, out max, out uint flags) && (flags & HARDWS_MAX_ENABLE) != 0; }
         finally { CloseHandle(h); }
@@ -237,13 +257,15 @@ internal static class Native
     /// <summary>Applies a hard ceiling on the resident working set.</summary>
     public static bool SetCeiling(int pid, long ceilingBytes)
     {
-        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
+        var h = OpenProcess(PROCESS_SET_QUOTA, false, pid);
         if (h == IntPtr.Zero) return false;
         try
         {
             const long minBytes = 1L * 1024 * 1024;
-            return SetProcessWorkingSetSizeEx(h, (nuint)minBytes, (nuint)Math.Max(ceilingBytes, minBytes * 2),
+            bool ok = SetProcessWorkingSetSizeEx(h, (nuint)minBytes, (nuint)Math.Max(ceilingBytes, minBytes * 2),
                 HARDWS_MIN_DISABLE | HARDWS_MAX_ENABLE);
+            if (ok) CeilingLedger.Add(pid);   // so a crash can be cleaned up without touching other programs' caps
+            return ok;
         }
         finally { CloseHandle(h); }
     }
@@ -251,7 +273,7 @@ internal static class Native
     /// <summary>Removes the hard ceiling and puts the original soft limits back.</summary>
     public static bool Release(int pid, nuint originalMin, nuint originalMax)
     {
-        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, pid);
+        var h = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return false;
         try
         {
@@ -259,18 +281,19 @@ internal static class Native
             // the process uses hundreds of MB makes Windows trim it almost to zero. So lift the cap by
             // giving a soft max well above the current usage instead of the tiny original value.
             long ws = 0;
-            try { using var p = System.Diagnostics.Process.GetProcessById(pid); ws = p.WorkingSet64; } catch { }
+            var counters = new PROCESS_MEMORY_COUNTERS { cb = (uint)Marshal.SizeOf<PROCESS_MEMORY_COUNTERS>() };
+            if (K32GetProcessMemoryInfo(h, ref counters, counters.cb)) ws = (long)counters.WorkingSetSize;   // same handle: no Process object
             long softMax = Math.Max((long)originalMax, Math.Max(ws * 2, 512L * 1024 * 1024));
             nuint max = (nuint)softMax;
             nuint min = originalMin < max ? originalMin : (nuint)(max / 2);
-            return SetProcessWorkingSetSizeEx(h, min, max, HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE);
+            bool ok = SetProcessWorkingSetSizeEx(h, min, max, HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE);
+            if (ok) CeilingLedger.Remove(pid);
+            return ok;
         }
         finally { CloseHandle(h); }
     }
 
     // ---- Foreground change event + prefetch (bring a trimmed app's pages back before you need them) ----
-    const uint PROCESS_VM_OPERATION = 0x0008;
-
     [StructLayout(LayoutKind.Sequential)]
     struct MEMORY_BASIC_INFORMATION
     {
@@ -294,7 +317,7 @@ internal static class Native
     /// in large efficient batches. Stops after maxBytes. Returns how many bytes were requested.</summary>
     public static long Prefetch(int pid, long maxBytes)
     {
-        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_VM_OPERATION, false, pid);
+        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return 0;
         try
         {
@@ -356,7 +379,7 @@ internal static class Native
             for (int attempt = 0; attempt < 4; attempt++)
             {
                 long bytes = (entries + 1) * IntPtr.Size;
-                if (bytes > 256L * 1024 * 1024) return null;
+                if (bytes > 64L * 1024 * 1024) return null;   // 8 million pages = 32 GB of resident memory: more than we want to copy and sort
                 buf = Marshal.AllocHGlobal((IntPtr)bytes);
                 if (K32QueryWorkingSet(h, buf, (uint)bytes))
                 {
@@ -399,7 +422,7 @@ internal static class Native
     public static long PrefetchResident(int pid, ResidentSet set, long maxBytes)
     {
         if (set.Starts.Length == 0 || maxBytes < 4096) return 0;
-        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION | PROCESS_VM_OPERATION, false, pid);
+        var h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, false, pid);
         if (h == IntPtr.Zero) return 0;
         try
         {
@@ -444,316 +467,6 @@ internal static class Native
             return total;
         }
         finally { CloseHandle(h); }
-    }
-
-    delegate void WinEventProc(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
-
-    [DllImport("user32.dll")]
-    static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventProc proc, uint pid, uint thread, uint flags);
-
-    [DllImport("user32.dll")]
-    static extern bool UnhookWinEvent(IntPtr hook);
-
-    static WinEventProc? _fgProc;   // kept in a field so the garbage collector cannot free it while Windows still calls it
-    static IntPtr _fgHook;
-
-    /// <summary>Calls onChange the moment Windows switches the foreground window (no waiting for the next engine tick).
-    /// Must be called from a thread that pumps messages (the UI thread).</summary>
-    public static void WatchForeground(Action onChange)
-    {
-        if (_fgHook != IntPtr.Zero) return;
-        _fgProc = (_, _, hwnd, idObject, _, _, _) => { if (idObject == 0 && hwnd != IntPtr.Zero) { try { onChange(); } catch { } } };
-        _fgHook = SetWinEventHook(0x0003 /* EVENT_SYSTEM_FOREGROUND */, 0x0003, IntPtr.Zero, _fgProc, 0, 0, 0x0000 /* OUTOFCONTEXT */);
-    }
-
-    public static void StopWatchingForeground()
-    {
-        if (_fgHook != IntPtr.Zero) { UnhookWinEvent(_fgHook); _fgHook = IntPtr.Zero; }
-    }
-
-    // ---- Win+V / Win+. / Win+; / Win+H detector ----
-    // The panel's windows look the same open or closed (cloak=2 all the time) and it never takes the foreground, so the only
-    // reliable "it was just summoned" signal is the key combo itself. The hook only checks "Win held + one of these keys" and
-    // stores a timestamp. No key is logged or kept. It passes every key on to Windows untouched.
-    delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    static extern IntPtr SetWindowsHookExW(int idHook, LowLevelKeyboardProc fn, IntPtr hMod, uint threadId);
-
-    [DllImport("user32.dll")]
-    static extern bool UnhookWindowsHookEx(IntPtr hook);
-
-    [DllImport("user32.dll")]
-    static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    static extern short GetAsyncKeyState(int vk);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr GetModuleHandleW(string? name);
-
-    static LowLevelKeyboardProc? _msProc;
-    static IntPtr _msHook;
-    static long _markTicks;
-    static volatile string _markLabel = "";
-    /// <summary>Diagnostics only: last Esc / Enter / mouse click within 60 s after a Win+V press (a possible "panel closed" moment).</summary>
-    public static long LastPanelMarkTicks => Interlocked.Read(ref _markTicks);
-    public static string LastPanelMarkLabel => _markLabel;
-    static void Mark(string label) { _markLabel = label; Interlocked.Exchange(ref _markTicks, DateTime.UtcNow.Ticks); }
-    static bool NearPanelKey() { long k = Interlocked.Read(ref _panelKeyTicks); return k != 0 && DateTime.UtcNow.Ticks - k < TimeSpan.TicksPerSecond * 60; }
-
-    static LowLevelKeyboardProc? _kbProc;   // kept in a field so the garbage collector cannot free it
-    static IntPtr _kbHook;
-    static long _panelKeyTicks;
-    /// <summary>Raised (from the keyboard hook, so keep it fast) the instant Win+V / Win+. / Win+; / Win+H is pressed.</summary>
-    public static Action? OnPanelKey;
-    /// <summary>Raised (from the keyboard hook, so keep it fast) the instant Win, Win+S or Win+Q is pressed (Start menu / Search).</summary>
-    public static Action? OnStartKey;
-    /// <summary>Raised (from the keyboard hook, so keep it fast) the instant Tab is pressed while Alt is held (Alt+Tab).</summary>
-    public static Action? OnAltTabKey;
-    /// <summary>Raised (from the mouse hook, so keep it fast) when any mouse button (left, right, middle, X1/X2) goes down, with the screen position.</summary>
-    public static Action<int, int>? OnMouseDown;
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct CLICKPT { public int X, Y; }
-    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(CLICKPT pt);
-    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
-
-    /// <summary>The process that owns the top-level window under a screen point, or 0.</summary>
-    public static int PidAtPoint(int x, int y)
-    {
-        try
-        {
-            var h = WindowFromPoint(new CLICKPT { X = x, Y = y });
-            if (h == IntPtr.Zero) return 0;
-            var root = GetAncestor(h, 2 /* GA_ROOT */);
-            GetWindowThreadProcessId(root != IntPtr.Zero ? root : h, out uint pid);
-            return (int)pid;
-        }
-        catch { return 0; }
-    }
-
-    /// <summary>True when the screen point is on the taskbar (Start button, search box, tray...), whose window is owned by explorer.</summary>
-    public static bool IsTaskbarAt(int x, int y)
-    {
-        try
-        {
-            var h = WindowFromPoint(new CLICKPT { X = x, Y = y });
-            if (h == IntPtr.Zero) return false;
-            var root = GetAncestor(h, 2 /* GA_ROOT */);
-            var cls = new StringBuilder(80);
-            GetClassNameW(root != IntPtr.Zero ? root : h, cls, 80);
-            string c = cls.ToString();
-            return c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd";
-        }
-        catch { return false; }
-    }
-
-    /// <summary>UTC ticks of the last Win+V / Win+. / Win+; / Win+H press, or 0 if none yet.</summary>
-    public static long LastInputPanelKeyTicks => Interlocked.Read(ref _panelKeyTicks);
-
-    /// <summary>Must be called from a thread that pumps messages (the UI thread).</summary>
-    public static void WatchInputPanelKeys(bool mouseMarks = false)
-    {
-        if (_kbHook != IntPtr.Zero) return;
-        _kbProc = (nCode, wParam, lParam) =>
-        {
-            try
-            {
-                int msg = (int)wParam;
-                if (nCode >= 0 && (msg == 0x0100 || msg == 0x0104))   // WM_KEYDOWN / WM_SYSKEYDOWN
-                {
-                    int vk = Marshal.ReadInt32(lParam);               // KBDLLHOOKSTRUCT.vkCode
-                    if (vk == 0x5B || vk == 0x5C || ((vk == 0x53 || vk == 0x51) && ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) != 0))   // Win, or Win+S / Win+Q
-                    {
-                        try { OnStartKey?.Invoke(); } catch { }
-                    }
-                    if (vk == 0x09 && (GetAsyncKeyState(0x12) & 0x8000) != 0)   // Tab with Alt held
-                    {
-                        try { OnAltTabKey?.Invoke(); } catch { }
-                    }
-                    if ((vk == 0x56 || vk == 0xBE || vk == 0xBA || vk == 0x48)   // V . ; H
-                        && ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) != 0)   // left or right Win held
-                    {
-                        Interlocked.Exchange(ref _panelKeyTicks, DateTime.UtcNow.Ticks);
-                        try { OnPanelKey?.Invoke(); } catch { }
-                    }
-                    else if ((vk == 0x1B || vk == 0x0D) && NearPanelKey())   // Esc / Enter shortly after Win+V
-                        Mark(vk == 0x1B ? "Esc" : "Enter");
-                }
-            }
-            catch { }
-            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
-        };
-        _kbHook = SetWindowsHookExW(13 /* WH_KEYBOARD_LL */, _kbProc, GetModuleHandleW(null), 0);
-        _msProc = (nCode, wParam, lParam) =>
-        {
-            try
-            {
-                int msg = (int)wParam;
-                if (nCode >= 0 && (msg == 0x0201 || msg == 0x0204 || msg == 0x0207 || msg == 0x020B))   // left / right / middle / X1-X2 button down: tell the engine where (it does the work off the hook thread)
-                {
-                    var cb = OnMouseDown;
-                    if (cb != null) cb(Marshal.ReadInt32(lParam), Marshal.ReadInt32(lParam, 4));   // MSLLHOOKSTRUCT.pt
-                }
-                if (mouseMarks && nCode >= 0 && (msg == 0x0201 || msg == 0x0204) && NearPanelKey()) Mark("click");   // diagnostics only
-            }
-            catch { }
-            return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
-        };
-        _msHook = SetWindowsHookExW(14 /* WH_MOUSE_LL */, _msProc, GetModuleHandleW(null), 0);
-    }
-
-    public static void StopWatchingInputPanelKeys()
-    {
-        if (_kbHook != IntPtr.Zero) { UnhookWindowsHookEx(_kbHook); _kbHook = IntPtr.Zero; }
-        if (_msHook != IntPtr.Zero) { UnhookWindowsHookEx(_msHook); _msHook = IntPtr.Zero; }
-    }
-
-    // ---- Window activity of ANY process (no class names, nothing app-specific) ----
-    // Windows raises these events for every app: a window shown, uncloaked, cloaked, or given focus. The diagnostics log showed that the
-    // Win+V host raises them at both open and close, whatever its internal window classes are called. So "this process just did something
-    // visible" works for new tools and survives Windows updates. It marks transitions, not how long a window stays open.
-    static WinEventProc? _actProc;
-    static readonly List<IntPtr> _actHooks = new();
-    static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> _actTicks = new();
-
-    /// <summary>Must be called from a thread that pumps messages (the UI thread).</summary>
-    static Action? _onPanelOpened;
-
-    /// <param name="onPanelOpened">Called (on the UI thread) the moment the Win+V panel takes keyboard focus.</param>
-    public static void WatchWindowActivity(Action? onPanelOpened = null)
-    {
-        if (_actProc != null) return;
-        _onPanelOpened = onPanelOpened;
-        _actProc = (_, evt, hwnd, idObject, _, _, _) =>
-        {
-            try
-            {
-                if (hwnd == IntPtr.Zero) return;
-                if (evt != 0x0003 && evt != 0x8005 && idObject != 0) return;   // window-level events only (focus may come from a child control)
-                if (evt == 0x8005 && _onPanelOpened != null)   // focus moved into the Win+V panel: lift its limit right now
-                {
-                    var cls = new StringBuilder(80);
-                    GetClassNameW(hwnd, cls, 80);
-                    if (cls.ToString() == "Windows.UI.Core.CoreComponentInputSource") _onPanelOpened();
-                }
-                GetWindowThreadProcessId(hwnd, out uint pid);
-                if (pid != 0) _actTicks[(int)pid] = DateTime.UtcNow.Ticks;
-            }
-            catch { }
-        };
-        // foreground | show | focus | cloaked + uncloaked
-        foreach (var (a, b) in new (uint, uint)[] { (0x0003, 0x0003), (0x8002, 0x8002), (0x8005, 0x8005), (0x8017, 0x8018) })
-            _actHooks.Add(SetWinEventHook(a, b, IntPtr.Zero, _actProc, 0, 0, 0 /* OUTOFCONTEXT */));
-    }
-
-    public static void StopWatchingWindowActivity()
-    {
-        foreach (var h in _actHooks) if (h != IntPtr.Zero) UnhookWinEvent(h);
-        _actHooks.Clear();
-        _actProc = null;
-    }
-
-    /// <summary>Process ids that showed / uncloaked / cloaked / focused a window within the last <paramref name="seconds"/> seconds.</summary>
-    public static List<int> RecentlyActivePids(double seconds)
-    {
-        long now = DateTime.UtcNow.Ticks, limit = now - (long)(seconds * TimeSpan.TicksPerSecond);
-        var list = new List<int>();
-        foreach (var kv in _actTicks)
-        {
-            if (kv.Value >= limit) list.Add(kv.Key);
-            else if (now - kv.Value > TimeSpan.TicksPerMinute * 5) _actTicks.TryRemove(kv.Key, out _);   // forget old entries
-        }
-        return list;
-    }
-
-    /// <summary>UTC ticks of the last window activity of a process, or 0 if none seen.</summary>
-    public static long LastActivityTicks(int pid) => _actTicks.TryGetValue(pid, out var t) ? t : 0;
-
-    // ---- Is the Win+V panel open right now? ----
-    // Found with the diagnostics log: while the panel is open, a TextInputHost thread has keyboard focus inside a
-    // "Windows.UI.Core.CoreComponentInputSource" window; closed (Esc / click outside), the focus is a plain "Windows.UI.Core.CoreWindow".
-    // The foreground window never changes and the window flags (visible / cloak) of TextInputHost look the same either way.
-    [StructLayout(LayoutKind.Sequential)] struct GuiRect { public int L, T, R, B; }
-    [StructLayout(LayoutKind.Sequential)]
-    struct GuiThreadInfo
-    {
-        public int cbSize, flags;
-        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
-        public GuiRect rcCaret;
-    }
-
-    [DllImport("user32.dll", EntryPoint = "GetGUIThreadInfo")]
-    static extern bool GetGuiThreadInfoNative(uint idThread, ref GuiThreadInfo info);
-
-    /// <summary>True if one of the process's threads has keyboard focus in a CoreComponentInputSource window (panel open).</summary>
-    public static bool IsInputPanelOpen(System.Diagnostics.Process p)
-    {
-        try
-        {
-            foreach (System.Diagnostics.ProcessThread t in p.Threads)
-            {
-                var gi = new GuiThreadInfo { cbSize = Marshal.SizeOf<GuiThreadInfo>() };
-                if (!GetGuiThreadInfoNative((uint)t.Id, ref gi) || gi.hwndFocus == IntPtr.Zero) continue;
-                var cls = new StringBuilder(80);
-                GetClassNameW(gi.hwndFocus, cls, 80);
-                if (cls.ToString() == "Windows.UI.Core.CoreComponentInputSource") return true;
-            }
-        }
-        catch { }
-        return false;
-    }
-
-    // ---- Is a process showing a real window right now? (hidden / cloaked UWP windows do not count) ----
-    [DllImport("user32.dll")]
-    static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    static extern bool IsWindowVisible(IntPtr hwnd);
-
-    [DllImport("dwmapi.dll")]
-    static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
-
-    /// <summary>True if the process owns a visible, not-cloaked top-level window (e.g. the Win+V flyout is open).</summary>
-    public static bool HasVisibleWindow(int pid)
-    {
-        bool found = false;
-        EnumWindows((hwnd, _) =>
-        {
-            GetWindowThreadProcessId(hwnd, out uint p);
-            if (p != (uint)pid || !IsWindowVisible(hwnd)) return true;
-            int cloaked = 0;
-            DwmGetWindowAttribute(hwnd, 14 /* DWMWA_CLOAKED */, out cloaked, sizeof(int));
-            if (cloaked == 0 && GetWindowRect(hwnd, out var r) && r.Right - r.Left > 1 && r.Bottom - r.Top > 1) { found = true; return false; }
-            return true;
-        }, IntPtr.Zero);
-        return found;
-    }
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    static extern int GetClassNameW(IntPtr hwnd, StringBuilder name, int max);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int max);
-
-    /// <summary>Diagnostics: one line per top-level window of a process (class, title, visible, cloaked, size).</summary>
-    public static List<string> DescribeWindows(int pid)
-    {
-        var list = new List<string>();
-        EnumWindows((hwnd, _) =>
-        {
-            GetWindowThreadProcessId(hwnd, out uint p);
-            if (p != (uint)pid) return true;
-            var cls = new StringBuilder(80); GetClassNameW(hwnd, cls, 80);
-            var txt = new StringBuilder(80); GetWindowTextW(hwnd, txt, 80);
-            int cloaked = 0; DwmGetWindowAttribute(hwnd, 14, out cloaked, sizeof(int));
-            GetWindowRect(hwnd, out var r);
-            list.Add($"[{cls}|{txt}|vis={(IsWindowVisible(hwnd) ? 1 : 0)}|cloak={cloaked}|{r.Right - r.Left}x{r.Bottom - r.Top}]");
-            return true;
-        }, IntPtr.Zero);
-        list.Sort(StringComparer.Ordinal);
-        return list;
     }
 
     // ---- Memory priority (Windows decides which pages to take first when RAM is short) ----
@@ -809,16 +522,16 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool SetThreadInformation(IntPtr thread, int infoClass, ref MEMORY_PRIORITY_INFORMATION info, uint size);
 
-    /// <summary>Sets the memory priority (1 very low ... 5 normal) of every thread of a process. Returns true if at least one thread changed.</summary>
+    /// <summary>Sets the memory priority (1 very low ... 5 normal) of every thread of a process. Returns true if at least one thread changed.
+    /// The thread list comes from one cached system snapshot, not from a Process object per app.</summary>
     public static bool SetThreadMemoryPriority(int pid, uint level)
     {
         int ok = 0;
         try
         {
-            using var p = System.Diagnostics.Process.GetProcessById(pid);
-            foreach (System.Diagnostics.ProcessThread t in p.Threads)
+            foreach (uint tid in ThreadIds(pid, 1500))
             {
-                var h = OpenThread(THREAD_SET_INFORMATION, false, (uint)t.Id);
+                var h = OpenThread(THREAD_SET_INFORMATION, false, tid);
                 if (h == IntPtr.Zero) continue;
                 try
                 {
@@ -830,5 +543,49 @@ internal static class Native
         }
         catch { }
         return ok > 0;
+    }
+
+    // ---- thread ids of all processes in one snapshot (cached for a moment) ----
+    [StructLayout(LayoutKind.Sequential)]
+    struct THREADENTRY32 { public uint dwSize, cntUsage, th32ThreadID, th32OwnerProcessID; public int tpBasePri, tpDeltaPri; public uint dwFlags; }
+
+    [DllImport("kernel32.dll")]
+    static extern bool Thread32First(IntPtr snap, ref THREADENTRY32 e);
+    [DllImport("kernel32.dll")]
+    static extern bool Thread32Next(IntPtr snap, ref THREADENTRY32 e);
+
+    static readonly object _thrLock = new();
+    static Dictionary<int, List<uint>> _thrMap = new();
+    static long _thrMapAt = long.MinValue / 2;
+
+    static List<uint> ThreadIds(int pid, int maxAgeMs)
+    {
+        lock (_thrLock)
+        {
+            long now = Environment.TickCount64;
+            if (now - _thrMapAt > maxAgeMs) { _thrMap = SnapshotThreads(); _thrMapAt = now; }
+            return _thrMap.TryGetValue(pid, out var l) ? l : new List<uint>();
+        }
+    }
+
+    static Dictionary<int, List<uint>> SnapshotThreads()
+    {
+        var map = new Dictionary<int, List<uint>>();
+        var snap = CreateToolhelp32Snapshot(0x4 /* TH32CS_SNAPTHREAD */, 0);
+        if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return map;
+        try
+        {
+            uint size = (uint)Marshal.SizeOf<THREADENTRY32>();
+            var e = new THREADENTRY32 { dwSize = size };
+            for (bool ok = Thread32First(snap, ref e); ok; ok = Thread32Next(snap, ref e))
+            {
+                int owner = (int)e.th32OwnerProcessID;
+                if (!map.TryGetValue(owner, out var l)) map[owner] = l = new List<uint>();
+                l.Add(e.th32ThreadID);
+                e.dwSize = size;   // Thread32Next may shrink it
+            }
+        }
+        finally { CloseHandle(snap); }
+        return map;
     }
 }

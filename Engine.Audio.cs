@@ -14,13 +14,18 @@ internal sealed partial class Engine
     readonly HashSet<string> _audioLogged = new(StringComparer.OrdinalIgnoreCase);
     DateTime _audioPoll = DateTime.MinValue;
 
+    // The COM calls of AudioSessions can block for a while (audio service restarting): they run on the thread pool, never under Gate.
+    // The scan only picks up the result of the previous poll.
+    HashSet<int>? _audioPolled;
+    int _audioPolling;
+
     void RefreshAudio(DateTime now)
     {
-        if (!Config.AudioProtect) { _audioSeen.Clear(); return; }
-        if ((now - _audioPoll).TotalSeconds >= 2)
+        if (!Config.AudioProtect) { _audioSeen.Clear(); Interlocked.Exchange(ref _audioPolled, null); return; }
+        var fresh = Interlocked.Exchange(ref _audioPolled, null);
+        if (fresh != null)
         {
-            _audioPoll = now;
-            foreach (int pid in AudioSessions.ActivePids())
+            foreach (int pid in fresh)
             {
                 if (!_audioSeen.ContainsKey(pid))
                 {
@@ -33,6 +38,16 @@ internal sealed partial class Engine
                 }
                 _audioSeen[pid] = now;
             }
+        }
+        if ((now - _audioPoll).TotalSeconds >= 2 && Interlocked.CompareExchange(ref _audioPolling, 1, 0) == 0)
+        {
+            _audioPoll = now;
+            Task.Run(() =>
+            {
+                try { Interlocked.Exchange(ref _audioPolled, AudioSessions.ActivePids()); }
+                catch { }
+                finally { Interlocked.Exchange(ref _audioPolling, 0); }
+            });
         }
         var grace = TimeSpan.FromSeconds(Math.Max(0, Config.AudioProtectGraceSeconds));
         foreach (var k in _audioSeen.Keys.Where(k => now - _audioSeen[k] > grace).ToList()) _audioSeen.Remove(k);
@@ -67,8 +82,7 @@ internal sealed partial class Engine
         foreach (var x in procs)
         {
             if (_prio.ContainsKey(x.Pid) || _prioFail.Contains(x.Pid)) continue;
-            DateTime start;
-            try { using var p = Process.GetProcessById(x.Pid); start = p.StartTime; } catch { continue; }
+            if (Native.GetStartTime(x.Pid) is not DateTime start) continue;
             if (!Native.GetMemoryPriority(x.Pid, out uint orig)) { _prioFail.Add(x.Pid); continue; }
             if (orig <= want) continue;   // the app already set an equal or lower priority itself: leave it alone
             if (!Native.SetMemoryPriority(x.Pid, want)) { _prioFail.Add(x.Pid); continue; }
@@ -87,8 +101,7 @@ internal sealed partial class Engine
             bool has = _threadPrio.ContainsKey(x.Pid);
             if (IsAudioActive(x.Pid)) { if (has) RestoreThreads(x.Pid); continue; }   // audio owner: never touched
             if (has) continue;
-            DateTime start;
-            try { using var p = Process.GetProcessById(x.Pid); start = p.StartTime; } catch { continue; }
+            if (Native.GetStartTime(x.Pid) is not DateTime start) continue;
             if (Native.SetThreadMemoryPriority(x.Pid, want)) _threadPrio[x.Pid] = start;
         }
     }
@@ -96,12 +109,7 @@ internal sealed partial class Engine
     void RestoreThreads(int pid)
     {
         if (!_threadPrio.Remove(pid, out var start)) return;
-        try
-        {
-            using var p = Process.GetProcessById(pid);
-            if (p.StartTime == start) Native.SetThreadMemoryPriority(pid, 5);
-        }
-        catch { /* process is gone */ }
+        if (Native.GetStartTime(pid) == start) Native.SetThreadMemoryPriority(pid, 5);   // null = the process is gone
     }
 
     /// <summary>Puts the original memory priority back (only if it is still the same process).</summary>
