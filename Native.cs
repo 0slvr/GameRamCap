@@ -385,21 +385,26 @@ internal static partial class Native
                 {
                     long n = Marshal.ReadIntPtr(buf).ToInt64();
                     if (n <= 0 || n > entries) return null;
-                    var raw = new long[n];
-                    Marshal.Copy(IntPtr.Add(buf, IntPtr.Size), raw, 0, (int)n);
-                    var pages = new ulong[n];
-                    for (long i = 0; i < n; i++) pages[i] = (ulong)raw[i] >> 12;
-                    Array.Sort(pages);
-                    var starts = new List<ulong>(); var counts = new List<uint>();
-                    ulong start = pages[0]; uint len = 1;
-                    for (long i = 1; i < n; i++)
+                    // One pooled array, converted and sorted in place (it used to be two fresh arrays of up to 64 MB each per snapshot).
+                    var raw = System.Buffers.ArrayPool<long>.Shared.Rent((int)n);
+                    try
                     {
-                        if (pages[i] == start + len) len++;
-                        else if (pages[i] < start + len) continue;      // duplicate
-                        else { starts.Add(start); counts.Add(len); start = pages[i]; len = 1; }
+                        Marshal.Copy(IntPtr.Add(buf, IntPtr.Size), raw, 0, (int)n);
+                        var pages = System.Runtime.InteropServices.MemoryMarshal.Cast<long, ulong>(raw.AsSpan(0, (int)n));
+                        for (int i = 0; i < pages.Length; i++) pages[i] >>= 12;
+                        pages.Sort();
+                        var starts = new List<ulong>(1024); var counts = new List<uint>(1024);
+                        ulong start = pages[0]; uint len = 1;
+                        for (int i = 1; i < pages.Length; i++)
+                        {
+                            if (pages[i] == start + len) len++;
+                            else if (pages[i] < start + len) continue;      // duplicate
+                            else { starts.Add(start); counts.Add(len); start = pages[i]; len = 1; }
+                        }
+                        starts.Add(start); counts.Add(len);
+                        return new ResidentSet { Starts = starts.ToArray(), Counts = counts.ToArray(), Pages = n };
                     }
-                    starts.Add(start); counts.Add(len);
-                    return new ResidentSet { Starts = starts.ToArray(), Counts = counts.ToArray(), Pages = n };
+                    finally { System.Buffers.ArrayPool<long>.Shared.Return(raw); }
                 }
                 int err = Marshal.GetLastWin32Error();
                 long need = Marshal.ReadIntPtr(buf).ToInt64();           // ERROR_BAD_LENGTH: the first entry holds the number of entries needed

@@ -195,6 +195,10 @@ internal sealed class Config
     public int StandbyMinMB { get; set; } = 1024;
     /// <summary>Standby cleaner: minimum seconds between two cleanings.</summary>
     public int StandbyMinIntervalSeconds { get; set; } = 120;
+    /// <summary>Smart and Hard also manage svchost and MsMpEng (Windows services, Defender), like any other background app: measured need,
+    /// the app's own budget, floors, release when it needs more. Off by default. The ONLY protected names this switches; everything else
+    /// in Engine.BaseProtected (dwm, audiodg, anti-cheat, GPU services...) stays untouched. Needs no restart.</summary>
+    public bool ManageSystemServices { get; set; } = false;
     public List<Target> Targets { get; set; } = new();   // empty by default: you add the apps yourself
 }
 

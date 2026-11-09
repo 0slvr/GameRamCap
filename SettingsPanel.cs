@@ -102,6 +102,7 @@ internal sealed class SettingsPanel : UserControl
             "StandbyFreeBelowMB - free + zeroed memory, not counting the standby cache.");
         AddNum(gen, "   ...at most once every (seconds)", c => c.StandbyMinIntervalSeconds, (c, v) => c.StandbyMinIntervalSeconds = (int)v, 10, 3600, 0, false,
             "StandbyMinIntervalSeconds");
+        Add(gen, "Also limit Windows services (svchost, Defender) in Smart and Hard", c => c.ManageSystemServices, (c, v) => c.ManageSystemServices = v, false);
         AddNum(gen, "Delay before the limit returns after Alt+Tab (s)", c => (decimal)c.RelimitDelaySeconds, (c, v) => c.RelimitDelaySeconds = (double)v, 0, 60, 1, false,
             "RelimitDelaySeconds - avoids flicker when you switch windows.");
 

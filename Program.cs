@@ -86,6 +86,7 @@ sealed class TrayContext : ApplicationContext
     readonly List<ToolStripMenuItem> _profileItems = new();
     SettingsPanel? _settings;
     HomePanel? _home;
+    readonly Timer _trimTimer = new() { Interval = 180_000 };   // trims GameRamCap's own memory while no window is showing
     bool _syncTray;
     volatile bool _busy;
     volatile bool _showRequested;
@@ -103,14 +104,9 @@ sealed class TrayContext : ApplicationContext
         _enabledItem = new ToolStripMenuItem("Enabled") { Checked = true, CheckOnClick = true };
         _enabledItem.CheckedChanged += (_, _) => { if (!_syncTray) SetEnabled(_enabledItem.Checked); };
 
-        _settings = new SettingsPanel(() => _engine.Config, SaveCfg, SetProfile,
-            OpenConfigFile,
-            LoadConfig,
-            Logger.Open,
-            ResetToDefaults);
-
-        _home = new HomePanel(() => _engine.Config, SaveCfg, () => _engine.Status, () => _engine.LimitedCount,
-            SetProfile, SetMode, SetEnabled, tab => ShowMain(tab), _settings.SmartDetails, BoostNow);
+        // The window's panels are created when the window is opened and freed when it is closed (see ShowMain).
+        _trimTimer.Tick += (_, _) => { if (_main == null || !_main.Visible) MemoryTrim.Run(); };
+        _trimTimer.Start();
 
         var menu = new ContextMenuStrip();
         menu.Items.Add(_statusItem);
@@ -331,9 +327,34 @@ sealed class TrayContext : ApplicationContext
 
     MainWindow? _main;
 
+    void CreatePanels()
+    {
+        _settings = new SettingsPanel(() => _engine.Config, SaveCfg, SetProfile,
+            OpenConfigFile,
+            LoadConfig,
+            Logger.Open,
+            ResetToDefaults);
+
+        _home = new HomePanel(() => _engine.Config, SaveCfg, () => _engine.Status, () => _engine.LimitedCount,
+            SetProfile, SetMode, SetEnabled, tab => ShowMain(tab), _settings.SmartDetails, BoostNow);
+    }
+
+    /// <summary>The window (and its panels) really closes and is freed; the tray icon alone keeps running at a few MB.</summary>
+    void OnMainClosed(MainWindow win)
+    {
+        if (!ReferenceEquals(_main, win)) return;
+        _main = null; _home = null; _settings = null;
+        _ = Task.Delay(2000).ContinueWith(_ => MemoryTrim.Run());   // after the controls are disposed
+    }
+
     void ShowMain(int tab)
     {
-        if (_main == null || _main.IsDisposed) _main = new MainWindow(_home!, _settings!);
+        if (_main == null || _main.IsDisposed)
+        {
+            CreatePanels();
+            var win = _main = new MainWindow(_home!, _settings!);
+            win.FormClosed += (_, _) => OnMainClosed(win);
+        }
         _main.Show();
         _main.WindowState = FormWindowState.Normal;
         _main.SelectTab(tab);
@@ -449,6 +470,7 @@ sealed class TrayContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         _timer.Stop();
+        _trimTimer.Stop();
         Native.StopWatchingForeground();
         Native.StopWatchingInputPanelKeys();
         Native.StopWatchingWindowActivity();

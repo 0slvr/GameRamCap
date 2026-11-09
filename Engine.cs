@@ -55,6 +55,9 @@ internal sealed partial class Engine : IDisposable
 
     /// <summary>What is protected right now: built-in list + the user's own protected apps (Config.Exceptions) - the ones the user unprotected.
     /// Replaced as a whole (never edited in place) so the engine thread can read it while the UI changes it.</summary>
+    /// <summary>The only built-in protected names the "Also limit Windows services" switch hands over to Smart / Hard.</summary>
+    static readonly string[] SystemServiceNames = { "svchost", "MsMpEng" };
+
     internal static volatile HashSet<string> Protected = new(BaseProtected, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Protected by name, but a process that only borrows a core Windows name (and does not run from the Windows folder) is not.</summary>
@@ -64,6 +67,7 @@ internal sealed partial class Engine : IDisposable
     {
         var set = new HashSet<string>(BaseProtected, StringComparer.OrdinalIgnoreCase);
         foreach (var n in c.UnprotectedBuiltIn ?? new()) set.Remove(n);
+        if (c.ManageSystemServices) foreach (var n in SystemServiceNames) set.Remove(n);   // Settings: also limit Windows services
         foreach (var n in c.Exceptions ?? new()) set.Add(n);
         Protected = set;
     }

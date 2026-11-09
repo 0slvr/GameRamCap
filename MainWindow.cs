@@ -2,7 +2,7 @@ namespace GameRamCap;
 
 /// <summary>One window, one row of tabs: Main (status and the few switches that matter), Apps, Settings
 /// (one scrolling page of cards). The Intensity levels table opens on demand from the Main tab.
-/// Closing the window only hides it; the tray icon keeps running.</summary>
+/// Closing the window really closes and frees it (the tray icon keeps running and opens a new one on demand).</summary>
 internal sealed class MainWindow : Form
 {
     // Logical places other code can ask for.
@@ -54,7 +54,7 @@ internal sealed class MainWindow : Form
     {
         base.OnResize(e);
         // "Hide when minimized": leave the taskbar too; the tray icon brings the window back
-        if (WindowState == FormWindowState.Minimized && UiPrefs.Current.HideWhenMinimized && Visible) BeginInvoke(new Action(Hide));
+        if (WindowState == FormWindowState.Minimized && UiPrefs.Current.HideWhenMinimized && Visible) BeginInvoke(new Action(Close));
     }
 
     protected override void Dispose(bool disposing)
@@ -96,7 +96,11 @@ internal sealed class MainWindow : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!_exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); return; }
-        base.OnFormClosing(e);
+        if (!_exiting && e.CloseReason == CloseReason.UserClosing && !_targets.ConfirmLeave())
+        {
+            e.Cancel = true;   // unsaved limits and you pressed Cancel: stay open
+            return;
+        }
+        base.OnFormClosing(e);   // not cancelled: the form closes and is disposed, which frees all its controls
     }
 }

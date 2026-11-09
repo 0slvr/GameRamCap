@@ -16,6 +16,11 @@ internal sealed class HomePanel : UserControl
     readonly Label _stats = new() { AutoSize = true, Tag = "muted" };
     readonly ModernButton _boost = new() { AutoSize = true, MinimumSize = new Size(132, 38), Text = "Boost now" };
     readonly Label _boostMsg = new() { AutoSize = true, Tag = "muted", Margin = new Padding(8, 9, 3, 0) };
+    // Windows memory compression card
+    readonly Label _mcState = new() { AutoSize = true };
+    readonly ModernButton _mcBtn = new() { AutoSize = true, MinimumSize = new Size(132, 38), Text = "Checking...", Enabled = false };
+    readonly Label _mcMsg = new() { AutoSize = true, Tag = "muted", Margin = new Padding(8, 9, 3, 0) };
+    bool? _mcOn;
     readonly ModernButton _toggle = new() { AutoSize = true, MinimumSize = new Size(132, 38), Tag = "primary" };
 
     readonly ModernRadio _smart = new() { AutoSize = true, Text = Ui.SmartText };
@@ -116,6 +121,34 @@ internal sealed class HomePanel : UserControl
         actions.Controls.Add(_boostMsg);
         statusCard.Controls.Add(actions);
         flow.Controls.Add(statusCard);
+
+        // 1b. Windows memory compression (the "Memory Compression" process): switch it off or on
+        var mcCard = Ui.MakeCard();
+        mcCard.Controls.Add(Ui.Heading("Windows memory compression", true));
+        mcCard.Controls.Add(Ui.Note("Windows keeps idle memory compressed in RAM (the \"Memory Compression\" process). Turning it off makes Windows use the page file sooner. " +
+                                    "Applies after a restart (Restart, not Shut down)."));
+        mcCard.Controls.Add(_mcState);
+        _mcBtn.Margin = new Padding(3, 12, 3, 0);
+        _tip.SetToolTip(_mcBtn, "Same as PowerShell Disable-MMAgent / Enable-MMAgent -MemoryCompression. Needs administrator rights. GameRamCap never changes it by itself.");
+        _mcBtn.Click += async (_, _) =>
+        {
+            bool turnOn = _mcOn == false;
+            if (!turnOn && MessageBox.Show(this, "Turn off Windows memory compression?\n\nIdle memory will go to the page file on disk instead of being compressed in RAM. " +
+                    "The change applies after you restart Windows, and you can turn it back on here at any time.",
+                    "GameRamCap", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            _mcBtn.Enabled = false;
+            _mcMsg.Text = "Working...";
+            string? err = await Task.Run(() => MemoryCompression.Set(turnOn));
+            if (IsDisposed) return;
+            _mcMsg.ForeColor = err == null ? Ui.Good : Ui.Muted;
+            _mcMsg.Text = err ?? "Done. Restart Windows to apply.";
+            RefreshMemComp(keepMsg: true);
+        };
+        var mcRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        mcRow.Controls.Add(_mcBtn);
+        mcRow.Controls.Add(_mcMsg);
+        mcCard.Controls.Add(mcRow);
+        flow.Controls.Add(mcCard);
 
         // 2. Mode card (+ the chosen mode's own settings)
         var modeCard = Ui.MakeCard();
@@ -226,6 +259,21 @@ internal sealed class HomePanel : UserControl
         _timer.Tick += (_, _) => { if (Visible) Refresh2(); };
         _timer.Start();
         Sync();
+        RefreshMemComp(keepMsg: false);
+    }
+
+    /// <summary>Reads the memory compression state once (when the window opens and after a change), not every second.</summary>
+    async void RefreshMemComp(bool keepMsg)
+    {
+        bool? on = await Task.Run(MemoryCompression.IsEnabled);
+        if (IsDisposed) return;
+        _mcOn = on;
+        bool pending = MemoryCompression.RestartPending();
+        _mcState.Text = on == null ? "State: unknown (needs administrator rights)"
+            : "State: " + (on.Value ? "ON" : "OFF") + (pending ? " (changed, restart Windows to apply)" : "");
+        _mcBtn.Text = on == false ? "Turn on" : "Turn off";
+        _mcBtn.Enabled = on != null;
+        if (!keepMsg) _mcMsg.Text = "";
     }
 
     static Label Spaced(Label l) { l.Margin = new Padding(3, 0, 3, 18); return l; }
